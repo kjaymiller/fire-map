@@ -136,4 +136,4 @@ __azurite_db*__.json
 .direnv
 Get-fire-data/output.json
 .envrc
-.envrc
+.env
