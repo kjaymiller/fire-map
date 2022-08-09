@@ -3,7 +3,7 @@ import logging
 import os
 import asyncio
 import azure.functions as func
-from process_fire_data import load_and_write
+from .process_fire_data import load_and_write
 
 
 
