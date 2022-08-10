@@ -17,6 +17,3 @@ async def main(mytimer: func.TimerRequest) -> None:
         await load_and_write(gis_id="b8f4033069f141729ffb298b7418b653", database=database, container=container)
     else:
         logging.info('Timer signalled prematurely')
-
-if __name__ == "__main__":
-    asyncio.run(main())

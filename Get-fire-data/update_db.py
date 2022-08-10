@@ -1,10 +1,8 @@
 import json
 import logging
 import os   
-from uuid import uuid4
 import asyncio
 
-import pathlib
 from azure.cosmos.aio import CosmosClient
 from azure.cosmos import PartitionKey
 from process_gis_data import write_new_file_data
