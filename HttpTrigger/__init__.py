@@ -2,6 +2,7 @@ import logging
 
 import azure.functions as func
 import httpx
+import os
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -9,7 +10,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     location = req.params.get('location', None)
     if location:
-        url ='https://atlas.microsoft.com/search/address/json?',
+        url ='https://atlas.microsoft.com/search/address/json?'
         params = {
             "api-version": "1.0",
             "query": location,
@@ -17,7 +18,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         }
         
         r = httpx.get(url, params=params)
-        return func.HttpResponse(r.json, status_code=200)
+        return func.HttpResponse("r.json", status_code=200)
     else:
         return func.HttpResponse(
              "This HTTP triggered function executed successfully, but no location was passed.",
