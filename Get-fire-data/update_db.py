@@ -5,7 +5,7 @@ import asyncio
 
 from azure.cosmos.aio import CosmosClient
 from azure.cosmos import PartitionKey
-from process_gis_data import write_new_file_data
+from .process_gis_data import write_new_file_data
 
 
 async def rebuild_container(
