@@ -4,20 +4,21 @@ import os
 from uuid import uuid4
 import asyncio
 
-
+import pathlib
 from azure.cosmos.aio import CosmosClient
 from azure.cosmos import PartitionKey
-import pandas as pd
-from arcgis import gis
+from process_gis_data import write_new_file_data
 
-g = gis.GIS()
-fire_data_item_id = "6db1b46d55dc4145b93d8eb8e525906c"
 
-async def clean_container(
+async def rebuild_container(
     database: str,
     container: str,
+    ttl_seconds: int = 0,
 ):
-    """Delete the existing container and create a new one with the same name"""
+    """Delete the existing container and create a new one with the same name.
+    
+    If ttl_seconds is not 0, the container's contents will delete themselves after the given number of seconds.
+    """
     async with CosmosClient.from_connection_string(
         os.environ.get("COSMOS_CONNECTION_STRING", None)
     ) as client:
@@ -29,25 +30,19 @@ async def clean_container(
         except Exception as e:
             pass
 
-        await client.get_database_client(database).create_container(id=container, partition_key=PartitionKey(path="/id", kind="Hash"))
+        await client.get_database_client(database).create_container(
+            id=container,
+            partition_key=PartitionKey(path="/id", kind="Hash"),
+            default_ttl=ttl_seconds,
+            )
         logging.info(f"Finished cleaning {container=}")
-    
-
-def write_new_file_data() -> str:
-    """Returns a JSON String of the Dataframe"""
-    logging.info("Loading data from ArcGIS")
-    fire_data = g.content.get(fire_data_item_id)
-    logging.info("Converting to Pandas Dataframe")
-    fire_df = pd.DataFrame.spatial.from_layer(fire_data.layers[0])
-    logging.info("Converting to JSON")
-    return fire_df.to_json(orient="records")
-
+        return await client.get_database_client(database).get_container_client(container)
 
 async def write_to_cosmos(
-    json_string: str,
+    data: dict,
     database: str,
     container: str
-):
+) -> bool:
     """Add the given JSON string to COSMOSDB"""
     logging.info("Connecting to CosmosDB")
     
@@ -55,27 +50,28 @@ async def write_to_cosmos(
         os.environ.get("COSMOS_CONNECTION_STRING", None)
     ) as client:
         logging.info(f"Writing to CosmosDB {database=} in {container=}") 
-        container = client.get_database_client(database=database).get_container_client(container=container)
+        container: str = client.get_database_client(database=database).get_container_client(container=container)
 
         logging.info("Writing to CosmosDB Container")
-        data = json.loads(json_string)
         logging.info(f"Writing {len(data)} records to {container=}")
         
         for record in data:
-            record["id"] = str(uuid4())
-            await container.upsert_item(record)
+            await container.create_item(
+                record,
+                enable_automatic_id_generation=True,
+                )
         logging.info(f"Finished writing {len(data)} records to {container=}")
-    return
+    return True
 
 
-async def load_and_write(database: str, container: str):
+async def load_and_write(gis_id:str, database: str, container: str):
     """Load the data from arcgis and write to cosmos"""
-    await clean_container(database=database, container=container)
-    json_string = write_new_file_data()
-    await write_to_cosmos(json_string, database=database, container=container)
+    gis_data = write_new_file_data(gis_id=gis_id)
+    geojson_string = json.loads(gis_data.to_geojson)
+    await write_to_cosmos(geojson_string['features'], database=database, container=container)
 
 
 if __name__ == "__main__":
     database=os.environ.get("COSMOS_DATABASE", None)
     container=os.environ.get("COSMOS_CONTAINER", None)
-    asyncio.run(load_and_write(database=database, container=container))
+    asyncio.run(load_and_write(gis_id="b8f4033069f141729ffb298b7418b653", database=database, container=container))
