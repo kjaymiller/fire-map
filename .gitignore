@@ -139,3 +139,4 @@ Get-fire-data/output.json
 .env
 .envrc
 .envrc
+HttpTrigger/test.py
