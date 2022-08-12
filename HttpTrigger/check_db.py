@@ -2,7 +2,8 @@ from azure.cosmos import CosmosClient
 from azure.cosmos.container import ContainerProxy
 import os
 import logging
-from location_data import Location
+import json
+from .location_data import Location
 
 connection_string = os.environ.get("COSMOS_CONNECTION_STRING", None)
 
@@ -31,7 +32,7 @@ def check_location_radius(
         )
         fires_in_range[distance] = list(results)
         
-    return fires_in_range
+    return json.dumps(fires_in_range)
 
 
 def load_samples(container: ContainerProxy, count:int=1) -> list:

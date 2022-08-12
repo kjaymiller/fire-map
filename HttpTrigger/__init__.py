@@ -24,10 +24,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     try:
-        location = location_data.fetch(location, distances)
+        location = location_data.fetch(location)
         logging.info(f"{location=}")
-        return db.check_location_radius(location, container, distances, max_count=10)
-
+        locations = db.check_location_radius(location, container, distances, max_count=10)
+        return func.HttpResponse(
+            locations,
+        )
     except Exception as e:
         logging.error(e)
         return func.HttpResponse(

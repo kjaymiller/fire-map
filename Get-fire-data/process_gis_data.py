@@ -1,7 +1,6 @@
 import logging
 from arcgis import GIS
 from arcgis.features.feature import FeatureSet
-
 g = GIS()
 
 def write_new_file_data(gis_id:str, layer:int=0) -> FeatureSet:
@@ -11,7 +10,7 @@ def write_new_file_data(gis_id:str, layer:int=0) -> FeatureSet:
     feature = fire_data.layers[layer]
     logging.info("Performing Query on Feature Layer")
     q = feature.query(
-        where="confidence >= 30 AND hours_old < 6",
+        where="confidence >= 65 AND hours_old  <= 4",
         return_distince_values=True,
         out_fields="confidence, hours_old",
         out_sr=4326,
