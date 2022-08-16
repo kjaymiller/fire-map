@@ -11,7 +11,7 @@ from .process_gis_data import write_new_file_data
 async def rebuild_container(
     database: str,
     container: str,
-    ttl_seconds: int = 0,
+    ttl_seconds: int = 1800,
 ):
     """Delete the existing container and create a new one with the same name.
     
