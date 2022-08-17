@@ -26,22 +26,22 @@ def check_location_radius(
 
     for distance in distances:
         results = container.query_items(
-            query =f"SELECT c.id, c.geometry FROM c WHERE ST_DISTANCE(c.geometry, {location.geography}) < {distance}",
+            query =f"SELECT c.properties, c.geometry FROM c WHERE ST_DISTANCE(c.geometry, {location.geography}) < {distance}",
             max_item_count=max_count,
             enable_cross_partition_query=True,
         )
         fires_in_range[distance] = list(results)
         
-    return json.dumps(fires_in_range)
+    return fires_in_range
 
 
-def load_samples(container: ContainerProxy, count:int=1) -> list:
+def load_samples(container: ContainerProxy) -> list:
     """
     Load all the samples from the cosmosdb container
     """
+
     results = container.query_items(
-        query =f"SELECT c.id, c.geometry FROM c",
-        max_item_count=count,
+        query =f"SELECT c FROM c",
         enable_cross_partition_query=True,
     )
     return results.next()

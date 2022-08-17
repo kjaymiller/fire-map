@@ -1,0 +1,10 @@
+
+{% extends 'base.html' %}
+{% block content %}
+    <div id="what-is-this">
+        <h2>What is this?</h2>
+        <p>Fire Map is an Azure Function that uses the Azure Maps API to show the location of fires in proximity to a location in the world.</p>
+        <p>Enter your location and distances in the form below to see fires in your area.</p>
+    </div>
+   {% include 'form.html' %}
+{% endblock %}

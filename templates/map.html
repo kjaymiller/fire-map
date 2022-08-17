@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+    {% block head %}
+    <link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.css" type="text/css">
+    <script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.js"></script>
+    <script type="text/javascript">
+        function InitMap()
+        {
+            var map = new atlas.Map('myMap', {
+                center: [-122.33, 47.6],
+                zoom: 12,
+                language: 'en-US',
+                authOptions: {
+                    authType: 'subscriptionKey',
+                    subscriptionKey: 'KbOJ2lKbSHUs1svkMz6kXfiDRBXRZ9WXyXJeU4YKPHg'
+                }
+            });
+            map.events.add('ready', function() {
+                var source = new atlas.source.DataSource();
+                source.add({{points | safe}})
+                map.sources.add(source);
+            })
+       }
+    </script>
+    {% endblock %}
+    {% block body %}onload="InitMap()"{% endblock %}
+    {% block content %}
+    <div>
+        <h2>Results for <strong>{{ query }}</strong></h2>
+    </div>
+    <div id="myMap" style="width: 100%; height: 500px"></div>
+    {% endblock %}

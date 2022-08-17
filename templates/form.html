@@ -1,0 +1,15 @@
+<div id="location-form">
+    <form action="/location">
+    <label for="location">Enter a location (Use a City and a Country) in the world</label>
+    <input type="text" name="location" id="location" placeholder="San Diego, CA, USA" required>
+
+    <label for="distances">Add custom distances in meters (comma separated)</label>
+    <input type="text" name="distances" id="distances" value="50000, 75000, 150000" required>
+    <select name="format" id="format">
+        <option value="html" selected>HTML</option>
+        <option value="json">JSON</option>
+    </select>
+
+    <input type="submit" value="Check for Fires">
+    </form>
+</div>

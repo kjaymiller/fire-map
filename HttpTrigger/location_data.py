@@ -1,4 +1,3 @@
-from multiprocessing.sharedctypes import Value
 import os
 import httpx
 from collections import namedtuple
@@ -22,7 +21,7 @@ def fetch(query: str, url: str=url, api_key: str=api_key) -> str:
     base_data = r.json()['results'][0]
     base_address = base_data['address']
     if not 'municipality' in base_address:
-        raise ValueError(f"No municipality found in {qeury}. Try a nearby town or city")
+        raise ValueError(f"No municipality found in {query}. Try a nearby town or city")
     
     location = Location(
         name=base_data['address']['freeformAddress'],
