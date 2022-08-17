@@ -98,4 +98,5 @@ async def get_fires_in_distance(
         )
 
 async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    logging.info(f"{req=}, {context=}")
     return func.AsgiMiddleware(api).handle(req, context)
