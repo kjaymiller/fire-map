@@ -6,7 +6,7 @@ from api import api
 from fastapi import Request, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse
-
+from fastapi.middleware.cors import CORSMiddleware
 from more_itertools import flatten
 
 import nest_asyncio
@@ -36,6 +36,13 @@ def get_fire_map(map_data):
     }
     return wrapper
 
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 @api.get("/", response_class=HTMLResponse)
 async def index(request: Request):
