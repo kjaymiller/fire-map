@@ -8,12 +8,13 @@
       "name": "req",
       "methods": [
         "get"
-      ]
+      ],
+      "route": "/{*route}"
     },
     {
       "type": "http",
       "direction": "out",
       "name": "$return"
-    }
+    }   
   ]
 }
