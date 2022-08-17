@@ -6,7 +6,6 @@ from api import api
 from fastapi import Request, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from more_itertools import flatten
 
 import nest_asyncio
