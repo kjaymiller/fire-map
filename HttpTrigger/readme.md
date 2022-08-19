@@ -4,7 +4,7 @@ The `HTTP Trigger` function is the entry point for the service.
 ## How it works
 
 The `HTTP Trigger` is accessible using the functions URL:
-<https://aka.ms/azfunctions/python/firemap>
+<https://jm-func-us-fire-notify.azurewebsites.net>
 
 and add the following query string parameters:
 - location=\<A Town or City in the World\> 
