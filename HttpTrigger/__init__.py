@@ -2,6 +2,7 @@ import logging
 from . import location_data
 from . import check_db as db
 
+import json
 from api import api
 from fastapi import Request, HTTPException
 from fastapi.templating import Jinja2Templates
@@ -74,7 +75,7 @@ async def get_fires_in_distance(
     try:
         location = location_data.fetch(location)
         logging.info(f"Found {location=}")
-        fire_points = db.check_location_radius(location, container, distances, max_count=10)
+        fire_points = db.check_location_radius(location, container, distances)
 
     except Exception as e:
         logging.error(e)
@@ -82,17 +83,22 @@ async def get_fires_in_distance(
              detail=f"An Error occurred.{e}",
              status_code=500,
         )
+        points_per_distance = {distance: f"{len(points)} fire points" for distance, points in fire_points.items()}
+    
     if format=="json":
-        return fire_points
+        return points_per_distance
     
     if format=="html":
         points = get_fire_map(fire_points)
+        
         return templates.TemplateResponse(
             "map.html",
             {
                 "request": request,
                 "query": location.name,
-                "points": points
+                "points": points,
+                "base_point": location.geography['coordinates'],
+                "points_per_distance": points_per_distance,
             }
         )
 

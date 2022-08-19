@@ -6,8 +6,8 @@
         function InitMap()
         {
             var map = new atlas.Map('myMap', {
-                center: [-122.33, 47.6],
-                zoom: 12,
+                center: [{{base_point[0]}}, {{base_point[1]}}],
+                zoom: 7,
                 language: 'en-US',
                 authOptions: {
                     authType: 'subscriptionKey',
@@ -16,8 +16,9 @@
             });
             map.events.add('ready', function() {
                 var source = new atlas.source.DataSource();
-                source.add({{points | safe}})
+                source.add({{points | tojson}})
                 map.sources.add(source);
+                map.layers.add(new atlas.layer.SymbolLayer(source, null));
             })
        }
     </script>

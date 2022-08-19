@@ -34,8 +34,6 @@ def fetch(query: str, url: str=url, api_key: str=api_key) -> str:
 
     return location
     
-        
-
 
 
 if __name__ == '__main__':
