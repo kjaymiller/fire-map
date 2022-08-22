@@ -83,7 +83,8 @@ async def get_fires_in_distance(
              detail=f"An Error occurred.{e}",
              status_code=500,
         )
-        points_per_distance = {distance: f"{len(points)} fire points" for distance, points in fire_points.items()}
+    
+    points_per_distance = {distance: f"{len(points)} fire points" for distance, points in fire_points.items()}
     
     if format=="json":
         return points_per_distance
