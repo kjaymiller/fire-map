@@ -16,23 +16,18 @@ def get_cosmos_container(database:str, container:str, connection_string:str) -> 
 def check_location_radius(
     location: Location,
     container: ContainerProxy,
-    distances: list[int],
+    distance: int,
     max_count:int =10,
 ) -> dict[int, list[dict]]:
-    """
-    Check is near any of the points in the cosmosdb container distances: list of distances (in meters) to check
-    """
+    """Check records in the cosmosdb container if an is is near the Location (distances in meters)"""
     fires_in_range = dict()
 
-    for distance in distances:
-        results = container.query_items(
-            query =f"SELECT c.properties, c.geometry FROM c WHERE ST_DISTANCE(c.geometry, {location.geography}) < {distance}",
-            max_item_count=max_count,
-            enable_cross_partition_query=True,
-        )
-        fires_in_range[distance] = list(results)
-        
-    return fires_in_range
+    results = container.query_items(
+        query = f"SELECT  * FROM (SELECT c.id, c.geometry, (ST_DISTANCE(c.geometry, {location.geography})) as distance FROM c) as newTable where newTable.distance < {distance}",
+        max_item_count=max_count,
+        enable_cross_partition_query=True,
+    )
+    return list(results)
 
 
 def load_samples(container: ContainerProxy) -> list:

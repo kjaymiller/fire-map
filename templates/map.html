@@ -29,4 +29,25 @@
         <h2>Results for <strong>{{ query }}</strong></h2>
     </div>
     <div id="myMap" style="width: 100%; height: 500px"></div>
+    
+    <div>
+        <h2>Details</h2>
+        <p> There are <strong>{{fire_details['fire_count']}}</strong> fires within <em>{{request.query_params['distance']}} meters</em> from <strong>{{query}}</strong>.</p>
+        {% if fire_details['closest'] %}
+        <p>The Closest Fire is {{fire_details['closest']['distance'] | round }} meters at:</p>
+        <ui>
+            <li>
+                latitude:{{fire_details['closest']['geometry']['coordinates'][1]}}
+            </li>
+            <li>
+                longitude:{{fire_details['closest']['geometry']['coordinates'][0]}}
+            </li>
+        </ui>
+        {% endif %}
+    </div>
+    <div>
+        <p>
+            {% include "form.html" %}
+        </p>
+    </div>
     {% endblock %}

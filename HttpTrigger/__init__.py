@@ -32,9 +32,26 @@ def get_fire_map(map_data):
     """return the fire map as geoJSON"""
     wrapper = {
         "type": "FeatureCollection",
-        "features": [add_type(point) for point in flatten(map_data.values())]
+        "features": [add_type(point) for point in map_data]
     }
     return wrapper
+
+
+def get_fire_stats(fire_points: list[dict]) -> dict :
+    """
+    Get the fire stats from the fire points
+    """
+    if fire_points:
+        closest_point = min(fire_points, key=lambda x: x['distance'])
+    
+    else:
+        closest_point = None
+
+    stats = {
+        "closest": closest_point,
+        "fire_count": len(fire_points),
+    }
+    return stats
 
 @api.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -44,7 +61,7 @@ async def index(request: Request):
 
 @api.get("/location/")
 async def get_fires_in_distance(
-    request: Request, location: str, distances: str, format:str ="json",
+    request: Request, location: str, distance: int=15000, format:str ="json",
     ) -> dict[str, list[dict]]:
     """Return the fires in a given distance from a given location"""
     if not location: 
@@ -52,30 +69,18 @@ async def get_fires_in_distance(
              detail="This HTTP triggered function executed successfully, but no location was passed.",
              status_code=500,
         )
-    
-    if not distances:
-        distances = "25000,75000,150000"
-    
+        
     if format not in ["json", "html"]:
         raise HTTPException(
              detail="Incorrect format specified. Please use either 'json' or 'html'.",
              status_code=500,
         )
 
-    try:
-        distances = [int(distance) for distance in distances.split(',')]
-
-    except ValueError as error:
-        logging.error(error)
-        raise HTTPException(
-            status_code=500,
-            detail= f"Invalid distance. Please use meters. {error=}",
-        )
 
     try:
         location = location_data.fetch(location)
         logging.info(f"Found {location=}")
-        fire_points = db.check_location_radius(location, container, distances)
+        fire_points = db.check_location_radius(location, container, distance)
 
     except Exception as e:
         logging.error(e)
@@ -84,12 +89,12 @@ async def get_fires_in_distance(
              status_code=500,
         )
     
-    points_per_distance = {distance: f"{len(points)} fire points" for distance, points in fire_points.items()}
     
     if format=="json":
-        return points_per_distance
+        return fire_points
     
     if format=="html":
+        fire_details = get_fire_stats(fire_points)
         points = get_fire_map(fire_points)
         
         return templates.TemplateResponse(
@@ -99,7 +104,7 @@ async def get_fires_in_distance(
                 "query": location.name,
                 "points": points,
                 "base_point": location.geography['coordinates'],
-                "points_per_distance": points_per_distance,
+                "fire_details": fire_details,
             }
         )
 
