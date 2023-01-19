@@ -4,28 +4,31 @@
 	"name": "Python 3",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	
-	"dockerComposeFile": "docker-compose.yml",
+	"dockerComposeFile": "docker-compose.yaml",
 	"workspaceFolder": "/workspace",
 	"service": "app",
 	"features": {
-		"ghcr.io/devcontainers/features/azure-cli:1": {}
+		"ghcr.io/devcontainers/features/azure-cli:1": {},
+		"ghcr.io/jlaundry/devcontainer-features/azure-functions-core-tools": {}
 	},
 	"customizations": {
 		"vscode": {
 			"extensions": [
 				"ms-azuretools.azure-dev",
 				"ms-python.python",
-				"ms-python.vscode-pylance"
+				"ms-python.vscode-pylance",
+				"github.Copilot",
+				"Azurite.azurite"
 			]
 		}
 	},
-	"remoteUser": "vscode"
+	"remoteUser": "vscode",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+	"forwardPorts": [7070, 9091]
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "pip3 install --user -r requirements.txt",
