@@ -5,6 +5,7 @@ Fetches FireMap Data for the US using NASA's VIIRS data
 import csv
 import datetime
 import os
+import logging
 
 import httpx
 import dotenv
@@ -61,12 +62,21 @@ def get_url(date):
 
 
 def get_fire_data() -> csv.DictReader:
-    f = httpx.get(get_url(datetime.datetime.now(datetime.timezone.utc)), timeout=30).text
+    date = datetime.datetime.now(datetime.timezone.utc)
+    f = httpx.get(get_url(date), timeout=30).text
     reader = csv.DictReader(StringIO(f), delimiter=",")
 
     if reader.line_num == 0:
-        f = httpx.get(get_url(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)), timeout=30).text
+        new_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        logging.warning(f"No data for {date}. Trying {new_date}")
+        f = httpx.get(get_url(new_date), timeout=30).text
+        date = new_date
         reader = csv.DictReader(StringIO(f), delimiter=",")
 
     for row in reader:
         yield to_geojson(row)
+
+
+if __name__ == "__main__":
+    for row in get_fire_data():
+        print(row)

@@ -1,53 +1,74 @@
-{% extends 'base.html' %}
-    {% block head %}
-    <link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.css" type="text/css">
-    <script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.js"></script>
-    <script type="text/javascript">
-        function InitMap()
-        {
-            var map = new atlas.Map('myMap', {
-                center: [{{base_point[0]}}, {{base_point[1]}}],
-                zoom: 7,
-                language: 'en-US',
-                authOptions: {
-                    authType: 'subscriptionKey',
-                    subscriptionKey: ''
-                }
+{% block head %}
+<link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.css" type="text/css">
+<script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.js"></script>
+<script type="text/javascript">
+    function InitMap()
+    {
+        var map = new atlas.Map('myMap', {
+            center: [-89.50, 38],
+            zoom: 3,
+            language: 'en-US',
+            authOptions: {
+                authType: 'subscriptionKey',
+                subscriptionKey: '0At72gRrpmQYGsJYgit5gOj3zOOjrCGFEL-BaQinqiU'
+            }
+        });
+        map.events.add('ready', function() {
+            var source = new atlas.source.DataSource(null, {
+                cluster: true,
+                clusterRadius: 50,
+                clusterMaxZoom: 5
             });
-            map.events.add('ready', function() {
-                var source = new atlas.source.DataSource();
-                source.add({{points | tojson}})
-                map.sources.add(source);
-                map.layers.add(new atlas.layer.SymbolLayer(source, null));
-            })
-       }
+
+            source.add({{points | tojson }})
+            map.sources.add(source);
+            var clusterBubbleLayer = new atlas.layer.BubbleLayer(source, null, {
+                //Scale the size of the clustered bubble based on the number of points inthe cluster.
+                radius: [
+                  'step',
+                  ['get', 'point_count'],
+                  20,         //Default of 20 pixel radius.
+                  100, 30,    //If point_count >= 100, radius is 30 pixels.
+                  750, 40     //If point_count >= 750, radius is 40 pixels.
+                ],
+            
+                //Change the color of the cluster based on the value on the point_cluster property of the cluster.
+                color: [
+                  'step',
+                  ['get', 'point_count'],
+                  'teal',            //Default to lime green. 
+                  20, 'yellow',     //If the point_count >= 100, color is yellow.
+                  55, 'red'        //If the point_count >= 100, color is red.
+                ],
+                strokeWidth: 0,
+                filter: ['has', 'point_count'] //Only rendered data points which have a point_count property, which clusters do.
+              });
+            
+              //Add the clusterBubbleLayer and two additional layers to the map.
+              map.layers.add([
+                clusterBubbleLayer,
+            
+                //Create a symbol layer to render the count of locations in a cluster.
+                new atlas.layer.SymbolLayer(source, null, {
+                  iconOptions: {
+                    image: 'none' //Hide the icon image.
+                  },
+                  textOptions: {
+                    textField: ['get', 'point_count_abbreviated'],
+                    offset: [0, 0.4]
+                  }
+                }),
+            
+                //Create a layer to render the individual locations.
+                new atlas.layer.SymbolLayer(source, null, {
+                  filter: ['!', ['has', 'point_count']] //Filter out clustered points from this layer.
+                })
+              ])
+        })
+    }
     </script>
-    {% endblock %}
-    {% block body %}onload="InitMap()"{% endblock %}
-    {% block content %}
-    <div>
-        <h2>Results for <strong>{{ query }}</strong></h2>
-    </div>
-    <div id="myMap" style="width: 100%; height: 500px"></div>
-    
-    <div>
-        <h2>Details</h2>
-        <p> There are <strong>{{fire_details['fire_count']}}</strong> fires within <em>{{request.query_params['distance']}} meters</em> from <strong>{{query}}</strong>.</p>
-        {% if fire_details['closest'] %}
-        <p>The Closest Fire is {{fire_details['closest']['distance'] | round }} meters at:</p>
-        <ui>
-            <li>
-                latitude:{{fire_details['closest']['geometry']['coordinates'][1]}}
-            </li>
-            <li>
-                longitude:{{fire_details['closest']['geometry']['coordinates'][0]}}
-            </li>
-        </ui>
-        {% endif %}
-    </div>
-    <div>
-        <p>
-            {% include "form.html" %}
-        </p>
-    </div>
-    {% endblock %}
+{% endblock %}
+{% block content %}
+<div id="myMap" style="width: 100%; height: 500px"></div>
+{{data}} - Datapoints
+{% endblock %}

@@ -48,14 +48,19 @@ def get_fire_stats(fire_points: list[dict]) -> dict :
 def index(request: Request):
     """Return the homepage of the application"""
 
-    container
-    foo = list(container.read_all_items())
-    print(foo.__len__())
+    entries = list(container.read_all_items())
+    feature_collection = FeatureCollection(
+       [point for point in entries]
+    )
 
     return templates.TemplateResponse(
         "index.html",
-        {"request": request},
-        )
+        {
+            "request": request,
+            "points": feature_collection,
+            "data": entries.__len__()
+        },
+    )
 
 
 # @api.get("/location/")

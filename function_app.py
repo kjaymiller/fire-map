@@ -11,9 +11,8 @@ app = func.FunctionApp()
 
 @app.function_name(name="mytimer")
 @app.schedule(
-    schedule="0 */5 * * * *",
+    schedule="0 */10 * * * *",
     arg_name="mytimer",
-    run_on_startup=True,
     use_monitor=False,
 ) 
 def load_cosmos(mytimer: func.TimerRequest) -> None:

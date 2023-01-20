@@ -8,7 +8,6 @@ from azure.cosmos import PartitionKey
 
 from src.db import async_client as client
 from src.db import (
-    async_client,
     database,
     COSMOS_DB,
     COSMOS_CONTAINER,
@@ -36,34 +35,3 @@ async def write_to_cosmos(
                 enable_automatic_id_generation=True,
                 )
     return True
-
-
-async def rebuild_container(
-    database: database,
-    container: str,
-    ttl_seconds: int = 660,
-):
-    """
-    Delete the existing container and create a new one with the same name.
-    
-    If ttl_seconds is not 0, the container's contents will delete themselves after the given number of seconds.
-    """
-    async with client:
-
-        try:
-            await database.delete_container(container=container)
-        except Exception as e:
-            pass
-
-        await database.create_container(
-            id=container,
-            partition_key=PartitionKey(path="/id", kind="Hash"),
-            default_ttl=ttl_seconds,
-            )
-        logging.warning(f"Finished cleaning {container=}")
-        return database.get_container_client(container)
-
-
-if __name__ == "__main__":
-    asyncio.run(rebuild_container(database, os.environ.get("COSMOS_CONTAINER")))
-    asyncio.run(write_to_cosmos(get_fire_data()))
