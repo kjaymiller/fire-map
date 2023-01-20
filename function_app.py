@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import os
 
 import azure.functions as func
 
-# from src.db.update_db import write_to_cosmos
-# from src.viirs.get_fire_data import get_fire_data
+from src.db.db import write_to_cosmos
+from src.viirs.get_fire_data import get_fire_data
 
 app = func.FunctionApp()
 
@@ -17,9 +18,8 @@ app = func.FunctionApp()
 ) 
 def load_cosmos(mytimer: func.TimerRequest) -> None:
     """Fetch the time"""
-    logging.info('Yo - Python timer trigger function ran at')
-    # write_to_cosmos(
-    #         data = get_fire_data(),
-    #         database=os.environ.get('COSMOS_DATABASE'),
-    #         container=os.environ.get('COSMOS_CONTAINER'),
-    # )
+    logging.info("Python timer trigger function ran at --")
+    asyncio.run(write_to_cosmos(get_fire_data()))
+
+if __name__ == "__main__":
+    asyncio.run(write_to_cosmos(get_fire_data()))
