@@ -70,15 +70,3 @@ def get_fire_data() -> csv.DictReader:
 
     for row in reader:
         yield to_geojson(row)
-
-
-
-
-
-if __name__ == "__main__":
-    print(get_fire_data().__next__())
-
-
-
-
-

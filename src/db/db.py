@@ -14,6 +14,8 @@ from src.db import (
     COSMOS_CONTAINER,
 )
 
+from src.viirs.get_fire_data import get_fire_data
+
 dotenv.load_dotenv()
 
 
@@ -64,3 +66,4 @@ async def rebuild_container(
 
 if __name__ == "__main__":
     asyncio.run(rebuild_container(database, os.environ.get("COSMOS_CONTAINER")))
+    asyncio.run(write_to_cosmos(get_fire_data()))
