@@ -56,14 +56,23 @@ def to_geojson(data: dict[str, str|float]) -> Feature:
     )
 
 
-def get_fire_data():
-    current_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    url = f"https://firms.modaps.eosdis.nasa.gov/api/country/csv/{API_KEY}/{SOURCE}/{COUNTRY}/{DAY_RANGE}/{current_date}"
-    f = httpx.get(url, timeout=30).text
+def get_url(date):
+    return  f"https://firms.modaps.eosdis.nasa.gov/api/country/csv/{API_KEY}/{SOURCE}/{COUNTRY}/{DAY_RANGE}/{date.strftime('%Y-%m-%d')}"
+
+
+def get_fire_data() -> csv.DictReader:
+    f = httpx.get(get_url(datetime.datetime.now(datetime.timezone.utc)), timeout=30).text
     reader = csv.DictReader(StringIO(f), delimiter=",")
+
+    if reader.line_num == 0:
+        f = httpx.get(get_url(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)), timeout=30).text
+        reader = csv.DictReader(StringIO(f), delimiter=",")
 
     for row in reader:
         yield to_geojson(row)
+
+
+
 
 
 if __name__ == "__main__":

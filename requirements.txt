@@ -4,6 +4,7 @@
 
 azure-functions
 azure-cosmos
+fastapi
 geojson
 python-dotenv
 httpx

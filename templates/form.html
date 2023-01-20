@@ -1,0 +1,18 @@
+<div id="location-form">
+    <form action="/location">
+    <label for="location">Enter a location (Use a City and a Country) in the world</label>
+    {% if 'location' in request.query_params %}
+        <input type="text" name="location" id="location" value="{{request.query_params['location']}}" required>
+    {% else %}
+        <input type="text" name="location" id="location" placeholder="San Diego, CA, USA" required>
+    {% endif %}
+    <label for="distance">Add distance in meters</label>
+    <input type="text" name="distance" id="distance" value="150000" required>
+    <select name="format" id="format">
+        <option value="html" selected>HTML</option>
+        <option value="json">JSON</option>
+    </select>
+
+    <input type="submit" value="Check for Fires">
+    </form>
+</div>
