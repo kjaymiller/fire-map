@@ -4,6 +4,7 @@
 
 azure-functions
 azure-cosmos
+aiohttp
 fastapi
 geojson
 python-dotenv

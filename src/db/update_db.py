@@ -1,8 +1,5 @@
 import logging
-import os   
-import asyncio
 
-import dotenv
 from azure.cosmos import PartitionKey
 from azure.cosmos.aio import CosmosClient
 

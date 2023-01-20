@@ -4,11 +4,11 @@ import os
 import asyncio
 
 import dotenv
-from azure.cosmos.aio import CosmosClient
 from azure.cosmos import PartitionKey
 
+from src.db import async_client as client
 from src.db import (
-    client,
+    async_client,
     database,
     COSMOS_DB,
     COSMOS_CONTAINER,
