@@ -13,12 +13,12 @@ app = func.FunctionApp()
 @app.schedule(
     schedule="0 */10 * * * *",
     arg_name="mytimer",
-    use_monitor=False,
+    use_monitor=True,
 ) 
 def load_cosmos(mytimer: func.TimerRequest) -> None:
     """Fetch the time"""
     logging.info("Python timer trigger function ran at --")
-    asyncio.run(write_to_cosmos(get_fire_data()))
+    write_to_cosmos(get_fire_data())
 
 if __name__ == "__main__":
-    asyncio.run(write_to_cosmos(get_fire_data()))
+    write_to_cosmos(get_fire_data())

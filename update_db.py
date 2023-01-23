@@ -15,7 +15,7 @@ from src.viirs.get_fire_data import get_fire_data
 async def rebuild_container(
     database: str = COSMOS_DB,
     container: str = COSMOS_CONTAINER,
-    ttl_seconds: int = 660,
+    ttl_seconds: int = 600,
 ):
     """Delete the existing container and create a new one with the same name.
     

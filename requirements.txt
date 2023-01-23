@@ -9,4 +9,5 @@ fastapi
 geojson
 python-dotenv
 httpx
+more-itertools
 uvicorn[standard]

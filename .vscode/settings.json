@@ -19,5 +19,8 @@
     },
     "peacock.remoteColor": "#832561",
     "peacock.color": "#215732",
-    "azureFunctions.pythonVenv": ".venv"
+    "azureFunctions.pythonVenv": ".venv",
+    "todo.symbols.box": "-", // Box symbol
+    "todo.symbols.done": "-", // Done symbol
+    "todo.symbols.cancelled": "-"
 }

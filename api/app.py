@@ -3,6 +3,7 @@ import logging
 import os
 
 import dotenv
+from more_itertools import bucket
 from azure.cosmos import CosmosClient
 
 from geojson import FeatureCollection
@@ -49,6 +50,17 @@ def index(request: Request):
     """Return the homepage of the application"""
 
     entries = list(container.read_all_items())
+
+    by_confidence = list(
+            bucket(
+                entries,
+                key=lambda x: x['properties'].get('confidence')
+            )
+        )
+    
+    print(list(by_confidence['low']))
+
+
     feature_collection = FeatureCollection(
        [point for point in entries]
     )
@@ -58,61 +70,7 @@ def index(request: Request):
         {
             "request": request,
             "points": feature_collection,
-            "data": entries.__len__()
+            "data": entries.__len__(),
+            "confidence_counts": confidence_counts,
         },
     )
-
-
-# @api.get("/location/")
-# async def get_fires_in_distance(
-#     request: Request, location: str, distance: int=15000, format:str ="json",
-#     ) -> dict[str, list[dict]]:
-#     """Return the fires in a given distance from a given location"""
-#     if not location: 
-#         raise HTTPException(
-#              detail="This HTTP triggered function executed successfully, but no location was passed.",
-#              status_code=500,
-#         )
-        
-#     if format not in ["json", "html"]:
-#         raise HTTPException(
-#              detail="Incorrect format specified. Please use either 'json' or 'html'.",
-#              status_code=500,
-#         )
-
-
-#     try:
-#         location = location_data.fetch(location)
-#         logging.info(f"Found {location=}")
-#         fire_points = db.check_location_radius(location, container, distance)
-
-#     except Exception as e:
-#         logging.error(e)
-#         raise HTTPException(
-#              detail=f"An Error occurred.{e}",
-#              status_code=500,
-#         )
-    
-    
-#     if format=="json":
-#         return fire_points
-    
-#     if format=="html":
-#         fire_details = get_fire_stats(fire_points)
-#         points = get_fire_map(fire_points)
-        
-#         return templates.TemplateResponse(
-#             "map.html",
-#             {
-#                 "request": request,
-#                 "query": location.name,
-#                 "points": points,
-#                 "base_point": location.geography['coordinates'],
-#                 "fire_details": fire_details,
-#             }
-#         )
-
-# # for Azure Functions
-# async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-#     logging.info(f"{req=}, {context=}")
-#     return func.AsgiMiddleware(api).handle(req, context)

@@ -8,4 +8,12 @@
         <p>Enter your location and distances in the form below to see fires in your area.</p>
     </div>
 {% include "map.html" %}
+<p>
+{{data}} - Datapoints
+</p>
+<h3>Confidence</h3>
+{% for confidence, count in confidence_counts.items() %}
+<p>{{confidence}}: {{count}}</p>
+{% endfor %}
+
 {% endblock %}
