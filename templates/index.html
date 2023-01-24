@@ -9,11 +9,11 @@
     </div>
 {% include "map.html" %}
 <p>
-{{data}} - Datapoints
+{{data}} - Total Datapoints
 </p>
 <h3>Confidence</h3>
-{% for confidence, count in confidence_counts.items() %}
-<p>{{confidence}}: {{count}}</p>
+{% for ranking in confidences%}
+    {{ranking}} - {{confidences[ranking]}}<br>
 {% endfor %}
 
 {% endblock %}

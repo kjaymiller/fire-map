@@ -5,6 +5,7 @@
 azure-functions
 azure-cosmos
 aiohttp
+jinja2
 fastapi
 geojson
 python-dotenv

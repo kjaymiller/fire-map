@@ -50,19 +50,26 @@ def index(request: Request):
     """Return the homepage of the application"""
 
     entries = list(container.read_all_items())
+    high_low_conf = container.query_items("SELECT * FROM c WHERE c.properties.confidence != 'nominal'", enable_cross_partition_query=True)
 
-    by_confidence = list(
-            bucket(
+    confidence_batches = bucket(
                 entries,
-                key=lambda x: x['properties'].get('confidence')
+                key=lambda x: x['properties']['confidence'],
             )
-        )
     
-    print(list(by_confidence['low']))
+    confidences = dict()
+
+    for key in list(confidence_batches):
+        confidences[key] = len(list(confidence_batches[key]))
+
+
+    print(confidences)
+
+
 
 
     feature_collection = FeatureCollection(
-       [point for point in entries]
+        [point for point in high_low_conf]
     )
 
     return templates.TemplateResponse(
@@ -71,6 +78,6 @@ def index(request: Request):
             "request": request,
             "points": feature_collection,
             "data": entries.__len__(),
-            "confidence_counts": confidence_counts,
+            "confidences": confidences,
         },
     )
