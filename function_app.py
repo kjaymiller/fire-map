@@ -25,7 +25,7 @@ def load_cosmos(mytimer: func.TimerRequest) -> None:
 
 
 @app.function_name(name="HttpTrigger")
-@app.http(route="/{*route}")
+@app.route(route="/{*route}")
 async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     logging.info(f"{req=}, {context=}")
     return func.AsgiMiddleware(api).handle(req, context)
