@@ -1,16 +1,12 @@
-import json
-import logging
-import os
 
 import dotenv
 from more_itertools import bucket
-from azure.cosmos import CosmosClient
 
 from geojson import FeatureCollection
 import fastapi
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 
 from src.db import (
     container
