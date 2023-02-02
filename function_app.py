@@ -11,7 +11,9 @@ app = func.FunctionApp()
 
 @app.function_name(name="mytimer")
 @app.schedule(
-    schedule="0 */10 * * * *",
+    # schedule="0 */10 * * * *",
+    # Cron expression for 8-10 and 18-21 every day
+    schedule="0 8-10,18-21 * * *",
     arg_name="mytimer",
     use_monitor=True,
 ) 

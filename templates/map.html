@@ -10,7 +10,7 @@
             language: 'en-US',
             authOptions: {
                 authType: 'subscriptionKey',
-                subscriptionKey: '0At72gRrpmQYGsJYgit5gOj3zOOjrCGFEL-BaQinqiU'
+                subscriptionKey: '{{ AZ_SUBSCRIPTION_KEY }}'
             }
         });
         map.events.add('ready', function() {
@@ -67,8 +67,8 @@
                     'match',
                     ['get', 'confidence'],
                     'high', 'red',
-                    'low', 'yellow',
-                    'nominal', 'gray',
+                    'nominal', 'yellow',
+                    'low', 'gray',
                     'blue'
                   ]
                 })

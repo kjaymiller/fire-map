@@ -22,6 +22,11 @@
       "problemMatcher": "$func-python-watch",
       "isBackground": true,
       "dependsOn": "pip install (functions)"
+    },
+    {
+      "label": "Run FastAPI App",
+      "type": "shell",
+      "command": "uvicorn api.app:api --reload"
     }
   ]
 }
