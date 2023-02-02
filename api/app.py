@@ -1,16 +1,13 @@
-import json
-import logging
-import os
 
+import os
 import dotenv
 from more_itertools import bucket
-from azure.cosmos import CosmosClient
 
 from geojson import FeatureCollection
 import fastapi
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 
 from src.db import (
     container
@@ -50,7 +47,7 @@ def index(request: Request):
     """Return the homepage of the application"""
 
     entries = list(container.read_all_items())
-    high_low_conf = container.query_items("SELECT * FROM c WHERE c.properties.confidence != 'nominal'", enable_cross_partition_query=True)
+    high_low_conf = container.query_items("SELECT * FROM c WHERE c.properties.confidence != 'low'", enable_cross_partition_query=True)
 
     confidence_batches = bucket(
                 entries,
@@ -66,8 +63,6 @@ def index(request: Request):
     print(confidences)
 
 
-
-
     feature_collection = FeatureCollection(
         [point for point in high_low_conf]
     )
@@ -79,5 +74,6 @@ def index(request: Request):
             "points": feature_collection,
             "data": entries.__len__(),
             "confidences": confidences,
+            "AZ_SUBSCRIPTION_KEY": os.environ.get("AZ_SUBSCRIPTION_KEY", None)
         },
     )

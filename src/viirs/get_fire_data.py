@@ -57,19 +57,19 @@ def to_geojson(data: dict[str, str|float]) -> Feature:
     )
 
 
-def get_url(date):
+def get_url(country:str, date:datetime.datetime) -> str:
     return  f"https://firms.modaps.eosdis.nasa.gov/api/country/csv/{API_KEY}/{SOURCE}/{COUNTRY}/{DAY_RANGE}/{date.strftime('%Y-%m-%d')}"
 
 
-def get_fire_data() -> csv.DictReader:
+def get_fire_data(country:str) -> csv.DictReader:
     date = datetime.datetime.now(datetime.timezone.utc)
-    f = httpx.get(get_url(date), timeout=30).text
+    f = httpx.get(get_url(country, date), timeout=30).text
     reader = csv.DictReader(StringIO(f), delimiter=",")
 
     if reader.line_num == 0:
         new_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
         logging.warning(f"No data for {date}. Trying {new_date}")
-        f = httpx.get(get_url(new_date), timeout=30).text
+        f = httpx.get(get_url(country, new_date), timeout=30).text
         date = new_date
         reader = csv.DictReader(StringIO(f), delimiter=",")
 

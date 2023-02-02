@@ -12,3 +12,4 @@ python-dotenv
 httpx
 more-itertools
 uvicorn[standard]
+nest_asyncio

@@ -1,9 +1,16 @@
+import os
+import dotenv
 import logging
 import asyncio
+
+
+dotenv.load_dotenv()
+
 
 from azure.cosmos import PartitionKey
 
 from src.db import async_client as client
+
 from src.db import (
     COSMOS_DB,
     COSMOS_CONTAINER,
@@ -11,6 +18,8 @@ from src.db import (
 from src.db.db import write_to_cosmos
 from src.viirs.get_fire_data import get_fire_data
 
+
+COUNTRY = "USA"
 
 async def rebuild_container(
     database: str = COSMOS_DB,
@@ -37,4 +46,4 @@ async def rebuild_container(
 
 if __name__ == "__main__":
     asyncio.run(rebuild_container())
-    asyncio.run(write_to_cosmos(get_fire_data()))
+    write_to_cosmos(get_fire_data(country=COUNTRY))

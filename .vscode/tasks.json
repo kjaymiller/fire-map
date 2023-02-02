@@ -20,7 +20,13 @@
       "label": "func: host start",
       "command": "host start",
       "problemMatcher": "$func-python-watch",
-      "isBackground": true
+      "isBackground": true,
+      "dependsOn": "pip install (functions)"
+    },
+    {
+      "label": "Run FastAPI App",
+      "type": "shell",
+      "command": "uvicorn api.app:api --reload"
     }
   ]
 }
