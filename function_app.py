@@ -20,16 +20,12 @@ app = func.FunctionApp()
 def load_cosmos(mytimer: func.TimerRequest) -> None:
     """Fetch the time"""
     logging.info("Python timer trigger function ran at --")
-    write_to_cosmos(get_fire_data())
+    write_to_cosmos(get_fire_data(country="USA"))
 
-
-
-
-
-@app.function_name(name="HttpTrigger")
-@app.route(route="/{*route}")
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    logging.info(f"{req=}, {context=}")
-    return func.AsgiMiddleware(api).handle(req, context)
+# @app.function_name(name="HttpTrigger")
+# @app.route(route="/{*route}")
+# async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+#     logging.info(f"{req=}, {context=}")
+#     return func.AsgiMiddleware(api).handle(req, context)
 
 
