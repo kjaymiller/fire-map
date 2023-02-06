@@ -24,7 +24,7 @@ COUNTRY = "USA"
 async def rebuild_container(
     database: str = COSMOS_DB,
     container: str = COSMOS_CONTAINER,
-    ttl_seconds: int = 600,
+    ttl_seconds: int = 3600,
 ):
     """Delete the existing container and create a new one with the same name.
     

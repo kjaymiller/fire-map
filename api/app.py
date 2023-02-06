@@ -7,7 +7,9 @@ from geojson import FeatureCollection
 import fastapi
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from azure.cosmos import PartitionKey
 
 from src.db import (
     container
@@ -59,10 +61,6 @@ def index(request: Request):
     for key in list(confidence_batches):
         confidences[key] = len(list(confidence_batches[key]))
 
-
-    print(confidences)
-
-
     feature_collection = FeatureCollection(
         [point for point in high_low_conf]
     )
@@ -74,6 +72,31 @@ def index(request: Request):
             "points": feature_collection,
             "data": entries.__len__(),
             "confidences": confidences,
-            "AZ_SUBSCRIPTION_KEY": os.environ.get("AZ_SUBSCRIPTION_KEY", None)
+            "AZ_SUBSCRIPTION_KEY": os.environ.get("AZ_SUBSCRIPTION_KEY", None),
         },
     )
+
+@api.get("/points/by_country/{country_id}")
+def get_points_by_country(country_id: str):
+    entries = container.query_items(
+        query="SELECT * FROM c WHERE c.properties.country_id = @country_id",
+        parameters=[{"name": "@country_id", "value": country_id}],
+    )
+
+    return [point for point in entries]
+
+@api.get("/points/{item_id}")
+def near_location(item_id:str):
+    point = container.read_item(
+        item_id,
+        partition_key=item_id
+    )
+
+    points_around=list(
+        container.query_items(
+                f"SELECT * FROM firemap c WHERE ST_DISTANCE(c.geometry, {point['geometry']}) < 300"),
+                partition_key="id",
+                )
+    point['properties']['points_around'] = points_around
+
+    return point

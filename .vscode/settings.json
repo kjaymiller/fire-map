@@ -22,5 +22,7 @@
     "azureFunctions.pythonVenv": ".venv",
     "todo.symbols.box": "-", // Box symbol
     "todo.symbols.done": "-", // Done symbol
-    "todo.symbols.cancelled": "-"
+    "todo.symbols.cancelled": "-",
+    "appService.defaultWebAppToDeploy": "/subscriptions/9bc6238c-8d31-4efb-bbf2-c4f71526e57b/resourceGroups/appsvc_linux_centralus/subscriptions/9bc6238c-8d31-4efb-bbf2-c4f71526e57b/resourceGroups/appsvc_linux_centralus/providers/Microsoft.Web/sites/jm-viirs-fremap-webapp",
+    "appService.deploySubpath": "."
 }
