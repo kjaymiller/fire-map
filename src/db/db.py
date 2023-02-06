@@ -1,9 +1,5 @@
 import typing
 import logging
-import os 
-import asyncio
-
-import dotenv
 from azure.cosmos import PartitionKey
 
 from src.db import (
@@ -11,8 +7,6 @@ from src.db import (
 )
 
 from src.viirs.get_fire_data import get_fire_data
-
-dotenv.load_dotenv()
 
 
 def write_to_cosmos(
