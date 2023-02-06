@@ -11,5 +11,5 @@ geojson
 python-dotenv
 httpx
 more-itertools
-uvicorn[standard]
+uvicorn
 nest_asyncio
