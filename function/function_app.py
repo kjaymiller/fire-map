@@ -1,7 +1,7 @@
 import logging
 
 import azure.functions as func
-from api.app import api
+from web.app import api
 from src.db.db import write_to_cosmos
 from src.viirs.get_fire_data import get_fire_data
 import nest_asyncio

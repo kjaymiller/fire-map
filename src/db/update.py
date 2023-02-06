@@ -9,9 +9,9 @@ dotenv.load_dotenv()
 
 from azure.cosmos import PartitionKey
 
-from src.db import async_client as client
+from .db import async_client as client
 
-from src.db import (
+from .db import (
     COSMOS_DB,
     COSMOS_CONTAINER,
 )
