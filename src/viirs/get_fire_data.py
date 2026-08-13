@@ -1,23 +1,33 @@
 """
-Fetches FireMap Data for the US using NASA's VIIRS data
+Fetches global FireMap data using NASA's VIIRS data via the FIRMS "area" API.
+
+NASA retired the old country-based CSV endpoint (`/api/country/csv/...`) --
+it now returns 400 "Invalid API call" for every request, key or no key.
+Its replacement, the area-based endpoint, takes a bounding box instead of a
+country code. We use "world" so every reload covers the whole globe --
+the area API doesn't return country attribution either way, so there's no
+useful per-country filtering to be had without a separate reverse-geocoding
+step.
 """
 
 import csv
 import datetime
-import os
 import logging
+import os
+from collections.abc import Iterator
 
-import httpx
 import dotenv
+import httpx
 from geojson import Feature, Point
-from io import StringIO
+
+logger = logging.getLogger(__name__)
 
 dotenv.load_dotenv()
 
-API_KEY = os.environ.get("NASA_API_KEY")
+API_KEY = os.environ.get("NASA_FIRMS_API_KEY")
 SOURCE = "VIIRS_NOAA20_NRT"
+AREA = "world"
 DAY_RANGE = 1
-COUNTRY = "USA"
 
 DAY_NIGHT = {
     'D': 'Day',
@@ -36,12 +46,16 @@ def parse_datetime(acq_date: str, acq_time: str) -> datetime.datetime:
     return datetime.datetime.strptime(f"{acq_date} {acq_time.zfill(4)}", "%Y-%m-%d %H%M")
 
 
-def to_geojson(data: dict[str, str|float]) -> Feature:
-    """Convert CSV data to GeoJSON Feature"""
+def to_geojson(data: dict[str, str]) -> Feature:
+    """Convert CSV data to GeoJSON Feature.
+
+    `data` is a row from `csv.DictReader`, so every value comes in as a
+    plain string -- the numeric fields (bright_ti4, frp, ...) are parsed to
+    float later, in `postgres.feature_to_row`, not here.
+    """
     return Feature(
         geometry=Point((float(data["longitude"]), float(data["latitude"]))),
         properties={
-            'country_id': data['country_id'],
             'bright_ti4': data['bright_ti4'],
             'scan': data['scan'],
             'track': data['track'],
@@ -57,21 +71,28 @@ def to_geojson(data: dict[str, str|float]) -> Feature:
     )
 
 
-def get_url(country:str, date:datetime.datetime) -> str:
-    return  f"https://firms.modaps.eosdis.nasa.gov/api/country/csv/{API_KEY}/{SOURCE}/{COUNTRY}/{DAY_RANGE}/{date.strftime('%Y-%m-%d')}"
+def get_url(date: datetime.datetime) -> str:
+    return (
+        f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{API_KEY}/{SOURCE}"
+        f"/{AREA}/{DAY_RANGE}/{date.strftime('%Y-%m-%d')}"
+    )
 
 
-def get_fire_data(country:str) -> csv.DictReader:
-    date = datetime.datetime.now(datetime.timezone.utc)
-    f = httpx.get(get_url(country, date), timeout=30).text
-    reader = csv.DictReader(StringIO(f), delimiter=",")
+def get_fire_data() -> Iterator[Feature]:
+    date = datetime.datetime.now(datetime.UTC)
+    text = httpx.get(get_url(date), timeout=30).text
+    lines = text.strip().splitlines()
 
-    if reader.line_num == 0:
-        new_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
-        logging.warning(f"No data for {date}. Trying {new_date}")
-        f = httpx.get(get_url(country, new_date), timeout=30).text
+    # A response with only a header row (or none at all) means there was no
+    # data for that date -- fall back to the previous day.
+    if len(lines) <= 1:
+        new_date = date - datetime.timedelta(days=1)
+        logger.warning(f"No data for {date}. Trying {new_date}")
+        text = httpx.get(get_url(new_date), timeout=30).text
         date = new_date
-        reader = csv.DictReader(StringIO(f), delimiter=",")
+        lines = text.strip().splitlines()
+
+    reader = csv.DictReader(lines, delimiter=",")
 
     for row in reader:
         yield to_geojson(row)

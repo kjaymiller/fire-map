@@ -4,16 +4,47 @@
 {% block content %}
     <div id="what-is-this">
         <h2>What is this?</h2>
-        <p>Fire Map is an Azure Function that uses the Azure Maps API to show the location of fires in proximity to a location in the world.</p>
-        <p>Enter your location and distances in the form below to see fires in your area.</p>
+        <p>Fire Map pulls active fire detections from NASA's FIRMS VIIRS data and plots them on a map.</p>
+        <p>
+            Want an alert when a fire shows up near a point you care about?
+            <a href="/register">Create an account</a>, then
+            <a href="/notify">set up a location + radius</a>. Already
+            subscribed? <a href="/manage">Manage your subscriptions</a>.
+        </p>
     </div>
 {% include "map.html" %}
-<p>
-{{data}} - Total Datapoints
-</p>
-<h3>Confidence</h3>
-{% for ranking in confidences%}
-    {{ranking}} - {{confidences[ranking]}}<br>
-{% endfor %}
+<div id="map-stats">
+    <small>{{ data }} total datapoints</small>
+    {% if latest_run %}
+    <small>Latest run: {{ latest_run.fetched_at.strftime('%Y-%m-%d %H:%M:%S %Z') }} &mdash; {{ latest_run.detection_count }} detections</small>
+    {% endif %}
+    {% for ranking in confidences %}
+    <small>{{ ranking }} confidence: {{ confidences[ranking] }}</small>
+    {% endfor %}
+</div>
+
+<footer id="disclaimer">
+    <p>
+        <small>
+            <strong>About confidence:</strong> each detection is rated by
+            NASA's VIIRS algorithm from least to most certain it actually saw
+            fire (rather than sun glint, hot ground, or another false
+            positive): <em>low</em> &lt; <em>nominal</em> &lt; <em>high</em>.
+            "Nominal" is the standard/default confidence level, not a step
+            below "low" &mdash; most detections fall here. <em>Low</em>-confidence
+            points are the most likely to be noise; <em>high</em>-confidence
+            points are the most likely to be a real, sizable fire.
+        </small>
+    </p>
+    <p>
+        <small>
+            <strong>This is not an emergency tool.</strong> Data here is
+            pulled from satellite passes on a delay and does not represent
+            real-time conditions. Do not use this map for evacuation
+            decisions or emergency planning &mdash; consult your local fire
+            authority or emergency services for that.
+        </small>
+    </p>
+</footer>
 
 {% endblock %}

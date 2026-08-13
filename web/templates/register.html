@@ -1,0 +1,93 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div id="register-section">
+    <h2>Create account</h2>
+    <p>
+        Create the account you'll use to
+        <a href="/notify">set up alerts</a> and
+        <a href="/manage">manage your subscriptions</a>.
+    </p>
+    <p>
+        <small>
+            <strong>Demo login only.</strong> This username/password is
+            stored with a salted hash and gates this demo's subscription
+            pages, but there's no rate limiting or account recovery behind
+            it, and logging out doesn't revoke anything server-side -- see
+            the code comments for the full caveat. Do not reuse a real
+            password here, and don't treat this as an example of
+            production-ready auth.
+        </small>
+    </p>
+
+    <form id="register-form">
+        <fieldset>
+            <label for="register-username">Username</label>
+            <input type="text" id="register-username" name="username" required>
+
+            <label for="register-password">Password</label>
+            <input type="password" id="register-password" name="password" minlength="8" required>
+
+            <label for="register-confirm-password">Confirm password</label>
+            <input type="password" id="register-confirm-password" name="confirm_password" minlength="8" required>
+
+            <input type="submit" value="Create account">
+        </fieldset>
+    </form>
+    <p id="register-status"></p>
+</div>
+
+<script>
+    document.getElementById('register-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+
+        var form = event.target;
+        var status = document.getElementById('register-status');
+
+        if (form.password.value !== form.confirm_password.value) {
+            status.textContent = 'Passwords do not match.';
+            return;
+        }
+
+        var payload = { username: form.username.value, password: form.password.value };
+
+        status.textContent = 'Creating account…';
+
+        fetch('/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function () {
+                status.textContent = 'Account created, signing you in…';
+                // Auto-login with the same credentials so the new account
+                // lands you straight on the alert page instead of making
+                // you type the password again immediately.
+                return fetch('/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload)
+                });
+            })
+            .then(function (response) {
+                if (response.ok) {
+                    window.location.href = '/notify';
+                } else {
+                    status.innerHTML = 'Account created. <a href="/login">Log in</a> to continue.';
+                }
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not create that account: ' + err.message;
+            });
+    });
+</script>
+{% endblock %}

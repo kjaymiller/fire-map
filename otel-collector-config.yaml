@@ -1,0 +1,39 @@
+# Local OTel Collector, sitting between the app (web/scheduler, see
+# src/otel.py) and wherever telemetry actually lands.
+#
+# Traces route on to Jaeger, which can store and display them. Logs have
+# nowhere to go yet -- Jaeger is a tracing-only backend -- so for now they
+# just get printed via the debug exporter. Swap that `logs` pipeline's
+# exporter for a real log backend (an OTLP-speaking one, or add the
+# matching contrib exporter) when you're ready to ship logs somewhere
+# durable; the app side (OTEL_EXPORTER_OTLP_ENDPOINT) doesn't need to
+# change either way, since it always just talks to this collector.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/jaeger]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

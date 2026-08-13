@@ -1,0 +1,87 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div id="subscribe-section">
+    <h2>Get notified</h2>
+    <p>
+        Register a point and a radius to queue alerts for fire detections
+        within that distance. Alerts go to whichever channels you've set up
+        on <a href="/manage-notifications">Manage notifications</a> &mdash;
+        add one there first if you haven't yet.
+    </p>
+
+    <div id="subscribe-logged-out" style="display: none">
+        <p>
+            <a href="/login">Log in</a> or
+            <a href="/register">create an account</a> to set up an alert.
+        </p>
+    </div>
+
+    <form id="subscribe-form" style="display: none">
+        <fieldset>
+            <label for="subscribe-latitude">Latitude</label>
+            <input type="number" id="subscribe-latitude" name="latitude" step="any" min="-90" max="90" required>
+
+            <label for="subscribe-longitude">Longitude</label>
+            <input type="number" id="subscribe-longitude" name="longitude" step="any" min="-180" max="180" required>
+
+            <label for="subscribe-radius">Radius (miles)</label>
+            <input type="number" id="subscribe-radius" name="radius_miles" step="any" min="1" max="500" value="25" required>
+
+            <input type="submit" value="Notify me">
+        </fieldset>
+    </form>
+    <p id="subscribe-status"></p>
+    <p><a href="/manage">Manage your existing subscriptions</a></p>
+</div>
+
+<script>
+    // Logged-in state comes from the session cookie set by /login -- no
+    // credentials to collect on this page, `fetch` just sends the cookie
+    // along automatically for same-origin requests.
+    fetch('/me', { credentials: 'same-origin' })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+            var target = data.username ? 'subscribe-form' : 'subscribe-logged-out';
+            document.getElementById(target).style.display = '';
+        });
+
+    document.getElementById('subscribe-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+
+        var form = event.target;
+        var status = document.getElementById('subscribe-status');
+        var payload = {
+            latitude: parseFloat(form.latitude.value),
+            longitude: parseFloat(form.longitude.value),
+            radius_miles: parseFloat(form.radius_miles.value)
+        };
+
+        status.textContent = 'Saving…';
+
+        fetch('/subscribers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload)
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (data) {
+                status.textContent = 'Subscribed (id ' + data.id + '). You\'ll be matched against fires within '
+                    + payload.radius_miles + ' miles of that point on future reloads.';
+                form.reset();
+                form.radius_miles.value = 25;
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not save that subscription: ' + err.message;
+            });
+    });
+</script>
+{% endblock %}

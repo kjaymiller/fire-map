@@ -1,82 +1,595 @@
 {% block head %}
-<link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.css" type="text/css">
-<script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<style>
+    .point-popup {
+        font-size: 1.3rem;
+    }
+
+    .point-popup-form label {
+        margin-bottom: 0.4rem;
+        font-size: 1.1rem;
+    }
+
+    .point-popup-form input {
+        height: 2.6rem;
+        margin-bottom: 0.6rem;
+    }
+
+    .point-popup-form button {
+        height: 2.8rem;
+        padding: 0 1rem;
+        font-size: 1.2rem;
+    }
+
+    .point-popup-status {
+        margin: 0.4rem 0 0;
+        font-size: 1.1rem;
+        color: #606c76;
+    }
+
+    .point-popup-hint {
+        margin: 0.6rem 0 0;
+        font-size: 1rem;
+        color: #606c76;
+    }
+
+    .point-popup-radius-info {
+        margin: 0.4rem 0 0;
+        font-size: 1.1rem;
+        color: #606c76;
+    }
+
+    #map-controls {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+    }
+
+    #history-button {
+        display: none;
+        height: auto;
+        padding: 0.4rem 1rem;
+        font-size: 1.3rem;
+    }
+
+    #history-button.visible {
+        display: inline-block;
+    }
+
+    #history-button.active {
+        background: #9b4dca;
+        border-color: #9b4dca;
+        color: #fff;
+    }
+
+    .history-popup {
+        font-size: 1.2rem;
+    }
+</style>
 <script type="text/javascript">
     function InitMap()
     {
-        var map = new atlas.Map('myMap', {
-            center: [-89.50, 38],
-            zoom: 3,
-            language: 'en-US',
-            authOptions: {
-                authType: 'subscriptionKey',
-                subscriptionKey: '{{ AZ_SUBSCRIPTION_KEY }}'
-            }
+        // doubleClickZoom is Leaflet's default anyway -- spelled out here
+        // since the single-click handler below has to work around it (see
+        // pendingClickTimeout).
+        var map = L.map('myMap', { doubleClickZoom: true }).setView([38, -89.50], 3);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Color markers by detection confidence.
+        var confidenceColors = {
+            high: 'red',
+            nominal: 'yellow',
+            low: 'gray'
+        };
+
+        // Split into two cluster groups so low-confidence readings can be
+        // toggled on/off without re-fetching or re-parsing anything --
+        // they're shown by default off since they're the most likely to be
+        // noise (see the confidence footnote below).
+        var primaryMarkers = L.markerClusterGroup({
+            maxClusterRadius: 35,
+            disableClusteringAtZoom: 5
         });
-        map.events.add('ready', function() {
-            var source = new atlas.source.DataSource(null, {
-                cluster: true,
-                clusterRadius: 35,
-                clusterMaxZoom: 5
+        var lowConfidenceMarkers = L.markerClusterGroup({
+            maxClusterRadius: 35,
+            disableClusteringAtZoom: 5
+        });
+
+        var points = {{ points | tojson }};
+
+        // acq_datetime comes back as a naive ISO string but is actually UTC
+        // (FIRMS timestamps are GMT-based) -- append 'Z' so the browser
+        // doesn't interpret it as local time.
+        function parseAcquiredAt(isoString) {
+            return new Date(isoString + 'Z').getTime();
+        }
+
+        // Fade older detections out relative to the newest/oldest VIIRS
+        // acquisition times in this snapshot -- not fetched_at, the actual
+        // satellite observation time -- so the freshest fires stand out.
+        var MAX_OPACITY = 0.9;
+        var MIN_OPACITY = 0.15;
+
+        var times = points.features.map(function (feature) {
+            return parseAcquiredAt(feature.properties.datetime);
+        });
+        var oldestTime = Math.min.apply(null, times);
+        var newestTime = Math.max.apply(null, times);
+        var timeSpan = newestTime - oldestTime;
+
+        function opacityForAge(acquiredAt) {
+            if (!timeSpan) {
+                return MAX_OPACITY;
+            }
+            var age = newestTime - acquiredAt; // 0 = newest, timeSpan = oldest
+            var ageRatio = age / timeSpan;
+            return MAX_OPACITY - ageRatio * (MAX_OPACITY - MIN_OPACITY);
+        }
+
+        // "2 minutes ago" / "5 hours ago" / "3 days ago", relative to the
+        // viewer's clock (not the other points in this snapshot).
+        function formatAge(acquiredAt) {
+            var minutes = Math.max(0, Math.round((Date.now() - acquiredAt) / 60000));
+
+            if (minutes < 60) {
+                return minutes + (minutes === 1 ? ' minute ago' : ' minutes ago');
+            }
+
+            var hours = Math.round(minutes / 60);
+            if (hours < 24) {
+                return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+            }
+
+            var days = Math.round(hours / 24);
+            return days + (days === 1 ? ' day ago' : ' days ago');
+        }
+
+        var EARTH_RADIUS_MILES = 3958.8;
+
+        // Great-circle distance in miles -- used to figure out which
+        // detections actually fall inside a subscription's radius, same
+        // math the backend uses to decide what to alert on (see
+        // src/db/subscribers.py).
+        function haversineMiles(a, b) {
+            var toRad = function (deg) { return deg * Math.PI / 180; };
+            var dLat = toRad(b.lat - a.lat);
+            var dLng = toRad(b.lng - a.lng);
+            var sinLat = Math.sin(dLat / 2);
+            var sinLng = Math.sin(dLng / 2);
+            var h = sinLat * sinLat +
+                Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * sinLng * sinLng;
+            return 2 * EARTH_RADIUS_MILES * Math.asin(Math.min(1, Math.sqrt(h)));
+        }
+
+        // Every detection's marker + latlng, flat across both cluster
+        // groups (low-confidence included) -- populated below as markers
+        // are built, read here so the radius preview can test every point
+        // regardless of which group it's currently clustered into.
+        var allDetections = [];
+
+        // Live preview of a subscription's coverage: a dashed circle at
+        // `latlng` sized to `radiusMiles`, plus a highlight ring dropped on
+        // top of every detection that actually falls inside it -- redrawn
+        // on every keystroke in the radius field, cleared when the popup
+        // that opened it closes.
+        var radiusPreviewCircle = null;
+        var radiusHighlightLayer = L.layerGroup();
+
+        function clearRadiusPreview() {
+            if (radiusPreviewCircle) {
+                map.removeLayer(radiusPreviewCircle);
+                radiusPreviewCircle = null;
+            }
+            radiusHighlightLayer.clearLayers();
+        }
+
+        function showRadiusPreview(latlng, radiusMiles) {
+            clearRadiusPreview();
+
+            if (!radiusMiles || radiusMiles <= 0) {
+                return [];
+            }
+
+            radiusPreviewCircle = L.circle(latlng, {
+                radius: radiusMiles * 1609.34, // miles -> meters, what Leaflet's circle expects
+                dashArray: '4, 4',
+                color: '#9b4dca',
+                weight: 2,
+                fillColor: '#9b4dca',
+                fillOpacity: 0.08
+            }).addTo(map);
+
+            var hot = allDetections.filter(function (detection) {
+                return haversineMiles(latlng, detection.latlng) <= radiusMiles;
             });
 
-            source.add({{points | tojson }})
-            map.sources.add(source);
-            var clusterBubbleLayer = new atlas.layer.BubbleLayer(source, null, {
-                //Scale the size of the clustered bubble based on the number of points inthe cluster.
-                radius: [
-                  'step',
-                  ['get', 'point_count'],
-                  20,         //Default of 20 pixel radius.
-                  100, 30,    //If point_count >= 100, radius is 30 pixels.
-                  750, 50     //If point_count >= 750, radius is 40 pixels.
-                ],
-            
-                //Change the color of the cluster based on the value on the point_cluster property of the cluster.
-                color: [
-                  'step',
-                  ['get', 'point_count'],
-                  'teal',            //Default to lime green. 
-                  15, 'yellow',     //If the point_count >= 100, color is yellow.
-                  55, 'red'        //If the point_count >= 100, color is red.
-                ],
-                strokeWidth: 0,
-                filter: ['has', 'point_count'] //Only rendered data points which have a point_count property, which clusters do.
-              });
-            
-              //Add the clusterBubbleLayer and two additional layers to the map.
-              map.layers.add([
-                clusterBubbleLayer,
-            
-                //Create a symbol layer to render the count of locations in a cluster.
-                new atlas.layer.SymbolLayer(source, null, {
-                  iconOptions: {
-                    image: 'none' //Hide the icon image.
-                  },
-                  textOptions: {
-                    textField: ['get', 'point_count_abbreviated'],
-                    offset: [0, 0.4]
-                  }
-                }),
-            
-                //Create a layer to render the individual locations.
-                new atlas.layer.BubbleLayer(source, null, {
-                  filter: ['!', ['has', 'point_count']], //Filter out clustered points from this layer.
-                  radius: 5,
-                  color: [
-                    'match',
-                    ['get', 'confidence'],
-                    'high', 'red',
-                    'nominal', 'yellow',
-                    'low', 'gray',
-                    'blue'
-                  ]
+            hot.forEach(function (detection) {
+                L.circleMarker(detection.latlng, {
+                    radius: 9,
+                    color: '#9b4dca',
+                    weight: 2,
+                    fill: false
+                }).addTo(radiusHighlightLayer);
+            });
+
+            radiusHighlightLayer.addTo(map);
+            return hot;
+        }
+
+        // Fetched once up front so both the marker popups below and the
+        // empty-map popup (further down) can tell, by the time anyone
+        // actually clicks something, whether to show the subscribe form or
+        // a login prompt -- built lazily per popup rather than once at
+        // startup, since this hasn't necessarily resolved yet at that point.
+        var currentUsername = null;
+        fetch('/me', { credentials: 'same-origin' })
+            .then(function (response) { return response.json(); })
+            .then(function (data) { currentUsername = data.username; });
+
+        // Shared by both marker popups (centered on that detection) and the
+        // empty-map popup (centered on the clicked point) -- the only
+        // difference between the two is what's above this in the popup.
+        function notifyFormHtml() {
+            if (!currentUsername) {
+                return (
+                    '<p><a href="/login">Log in</a> or ' +
+                    '<a href="/register">create an account</a> to set up an alert here.</p>'
+                );
+            }
+
+            return (
+                '<form class="point-popup-form">' +
+                '<label>Radius (miles)' +
+                '<input type="number" name="radius_miles" step="any" min="1" max="500" value="25" required></label>' +
+                '<button type="submit">Notify me here</button>' +
+                '</form>' +
+                '<p class="point-popup-radius-info"></p>' +
+                '<p class="point-popup-status"></p>' +
+                '<p class="point-popup-hint">Alerts go to whichever channels you\'ve set up on ' +
+                '<a href="/manage-notifications">Manage notifications</a>.</p>'
+            );
+        }
+
+        // Wires up the form built by notifyFormHtml() above, if there is
+        // one (nothing to wire up when logged out). `container` is the
+        // popup's root element and `latlng` is whatever point the alert
+        // should be centered on.
+        //
+        // Also draws the radius preview (dashed circle + highlighted hot
+        // points) for as long as this popup stays open -- redrawn on every
+        // radius edit, cleared on popupclose so it doesn't linger once the
+        // form goes away.
+        function wireNotifyForm(container, latlng) {
+            var form = container && container.querySelector('.point-popup-form');
+            if (!form) {
+                return;
+            }
+
+            var radiusInfo = container.querySelector('.point-popup-radius-info');
+
+            function updateRadiusPreview() {
+                var radiusMiles = parseFloat(form.radius_miles.value);
+                var hot = showRadiusPreview(latlng, radiusMiles);
+
+                if (!radiusInfo) {
+                    return;
+                }
+                if (!hot) {
+                    radiusInfo.textContent = '';
+                } else {
+                    radiusInfo.textContent = hot.length
+                        ? hot.length + (hot.length === 1 ? ' active detection' : ' active detections') + ' within this radius right now.'
+                        : 'No active detections within this radius right now.';
+                }
+            }
+
+            form.radius_miles.addEventListener('input', updateRadiusPreview);
+            updateRadiusPreview();
+
+            map.once('popupclose', clearRadiusPreview);
+
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+
+                var status = container.querySelector('.point-popup-status');
+                var submitButton = form.querySelector('button[type="submit"]');
+                var payload = {
+                    latitude: latlng.lat,
+                    longitude: latlng.lng,
+                    radius_miles: parseFloat(form.radius_miles.value)
+                };
+
+                status.textContent = 'Saving…';
+
+                fetch('/subscribers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload)
                 })
-              ])
-        })
+                    .then(function (response) {
+                        if (!response.ok) {
+                            return response.json().then(function (body) {
+                                throw new Error(body.detail || ('Request failed: ' + response.status));
+                            });
+                        }
+                        return response.json();
+                    })
+                    .then(function () {
+                        status.textContent = 'Subscribed — you\'ll be alerted on fires within '
+                            + payload.radius_miles + ' mi of this point.';
+                        submitButton.disabled = true;
+                    })
+                    .catch(function (err) {
+                        status.textContent = 'Could not save that subscription: ' + err.message;
+                    });
+            });
+        }
+
+        points.features.forEach(function (feature) {
+            var coords = feature.geometry.coordinates; // GeoJSON order: [lon, lat]
+            var confidence = feature.properties.confidence;
+            var color = confidenceColors[confidence] || 'blue';
+            var acquiredAt = parseAcquiredAt(feature.properties.datetime);
+            var latlng = L.latLng(coords[1], coords[0]);
+
+            var marker = L.circleMarker(latlng, {
+                radius: 5,
+                color: color,
+                fillColor: color,
+                fillOpacity: opacityForAge(acquiredAt),
+                stroke: false
+            });
+
+            allDetections.push({ latlng: latlng, confidence: confidence });
+
+            // Bound empty so the popup exists to open on click -- the real
+            // content (detection details + the same notify-here form the
+            // empty-map popup below uses) is filled in on open, once
+            // currentUsername has had a chance to resolve.
+            marker.bindPopup('');
+            marker.on('popupopen', function (e) {
+                e.popup.setContent(
+                    '<div class="point-popup">' +
+                    '<strong>' + confidence + ' confidence</strong><br>' +
+                    formatAge(acquiredAt) + '<br>' +
+                    'FRP: ' + feature.properties.frp +
+                    notifyFormHtml() +
+                    '</div>'
+                );
+                wireNotifyForm(e.popup.getElement(), latlng);
+            });
+
+            // Path layers bubble their mouse events up to the map by
+            // default (bubblingMouseEvents) -- without this, a click on a
+            // marker would also trigger the empty-map handler below a beat
+            // later, replacing this popup with the generic one instead of
+            // showing both. Zoom (dblclick) is left alone; only 'click'
+            // needs stopping since that's the only event the map handler
+            // below acts on.
+            marker.on('click', function (e) {
+                L.DomEvent.stopPropagation(e);
+            });
+
+            if (confidence === 'low') {
+                lowConfidenceMarkers.addLayer(marker);
+            } else {
+                primaryMarkers.addLayer(marker);
+            }
+        });
+
+        map.addLayer(primaryMarkers);
+
+        document.getElementById('show-all-readings').addEventListener('change', function (event) {
+            if (event.target.checked) {
+                map.addLayer(lowConfidenceMarkers);
+            } else {
+                map.removeLayer(lowConfidenceMarkers);
+            }
+        });
+
+        // Clicking empty map (not a marker -- those are handled above)
+        // shows the clicked point's lat/lon and the same notify-here form.
+        // Double-clicking still zooms in (Leaflet's default) instead --
+        // since a dblclick fires a plain 'click' first, a single-click
+        // handler with no debounce would pop this open right before the
+        // zoom on every double-click. Waiting out a short window for a
+        // follow-up 'dblclick' avoids that.
+        var pendingClickTimeout = null;
+
+        function openPointPopup(latlng) {
+            var popup = L.popup()
+                .setLatLng(latlng)
+                .setContent(
+                    '<div class="point-popup">' +
+                    '<strong>' + latlng.lat.toFixed(5) + ', ' + latlng.lng.toFixed(5) + '</strong>' +
+                    notifyFormHtml() +
+                    '</div>'
+                )
+                .openOn(map);
+
+            wireNotifyForm(popup.getElement(), latlng);
+        }
+
+        map.on('click', function (e) {
+            if (pendingClickTimeout) {
+                return;
+            }
+            pendingClickTimeout = setTimeout(function () {
+                pendingClickTimeout = null;
+                openPointPopup(e.latlng);
+            }, 250);
+        });
+
+        map.on('dblclick', function () {
+            if (pendingClickTimeout) {
+                clearTimeout(pendingClickTimeout);
+                pendingClickTimeout = null;
+            }
+        });
+
+        // "Show history here": once a viewer has zoomed in past
+        // HISTORY_MIN_ZOOM, the whole world's history isn't the relevant
+        // question anymore -- this queries just the visible area (see
+        // /history/area, PostGIS-backed and cached server-side) and plots
+        // it as a dimmer layer under the live detections, so it's obvious
+        // which points are "happening now" vs. "have happened here before".
+        var HISTORY_MIN_ZOOM = 7;
+        // Radius sent to /history/area is the distance from the viewport's
+        // center to its nearest edge (not the far corner) -- so the circle
+        // queried is guaranteed to be fully covered by what's on screen,
+        // rather than pulling in a wedge of history well outside the
+        // current view.
+        var HISTORY_MAX_RADIUS_MILES = 150;
+
+        var historyButton = document.getElementById('history-button');
+        var historyLayer = L.layerGroup();
+        var historyActive = false;
+        var historyLoading = false;
+
+        function updateHistoryButtonVisibility() {
+            var visible = map.getZoom() >= HISTORY_MIN_ZOOM;
+            historyButton.classList.toggle('visible', visible);
+            if (!visible && historyActive) {
+                clearHistory();
+            }
+        }
+
+        function clearHistory() {
+            historyLayer.clearLayers();
+            map.removeLayer(historyLayer);
+            historyActive = false;
+            historyButton.classList.remove('active');
+            historyButton.textContent = 'Show history here';
+        }
+
+        function viewportRadiusMiles() {
+            var bounds = map.getBounds();
+            var center = bounds.getCenter();
+            var edge = L.latLng(center.lat, bounds.getWest());
+            return Math.min(HISTORY_MAX_RADIUS_MILES, haversineMiles(center, edge));
+        }
+
+        function renderHistory(rows) {
+            historyLayer.clearLayers();
+
+            rows.forEach(function (row) {
+                var marker = L.circleMarker([row.latitude, row.longitude], {
+                    radius: 4,
+                    color: '#606c76',
+                    fillColor: '#606c76',
+                    fillOpacity: 0.5,
+                    weight: 1
+                });
+                marker.bindPopup(
+                    '<div class="history-popup">' +
+                    '<strong>' + row.distance_miles.toFixed(1) + ' mi from center</strong><br>' +
+                    formatDetectedAt(row.acq_datetime) + '<br>' +
+                    'confidence: ' + row.confidence + ', FRP: ' + row.frp +
+                    '</div>'
+                );
+                historyLayer.addLayer(marker);
+            });
+
+            historyLayer.addTo(map);
+        }
+
+        // acq_datetime here is a Postgres TIMESTAMPTZ, already carrying an
+        // offset (unlike the naive FIRMS strings parseAcquiredAt handles
+        // above) -- straight to Date is correct.
+        function formatDetectedAt(isoString) {
+            var date = new Date(isoString);
+            return isNaN(date.getTime()) ? isoString : date.toLocaleString();
+        }
+
+        function loadHistory() {
+            if (historyLoading) {
+                return;
+            }
+            historyLoading = true;
+            historyButton.textContent = 'Loading history…';
+
+            var center = map.getBounds().getCenter();
+            var params = new URLSearchParams({
+                lat: center.lat,
+                lon: center.lng,
+                radius_miles: viewportRadiusMiles()
+            });
+
+            fetch('/history/area?' + params.toString(), { credentials: 'same-origin' })
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('Request failed: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function (rows) {
+                    renderHistory(rows);
+                    historyActive = true;
+                    historyButton.classList.add('active');
+                    historyButton.textContent = 'Hide history (' + rows.length + ')';
+                })
+                .catch(function () {
+                    historyButton.textContent = 'Could not load history';
+                    setTimeout(function () {
+                        historyButton.textContent = 'Show history here';
+                    }, 2000);
+                })
+                .finally(function () {
+                    historyLoading = false;
+                });
+        }
+
+        historyButton.addEventListener('click', function () {
+            if (historyActive) {
+                clearHistory();
+            } else {
+                loadHistory();
+            }
+        });
+
+        // Re-querying on every pan/zoom would hammer the endpoint (even
+        // cached, that's still a Valkey round trip per move) -- history
+        // only refreshes when the button's clicked again, but it still
+        // needs re-hiding if a zoom-out takes the view below the
+        // "meaningful area" threshold.
+        map.on('zoomend', updateHistoryButtonVisibility);
+        updateHistoryButtonVisibility();
     }
-    </script>
+</script>
 {% endblock %}
 {% block content %}
+<div id="map-controls">
+    <label for="show-all-readings">
+        <input type="checkbox" id="show-all-readings">
+        Show all readings (including low confidence)
+    </label>
+    <button type="button" id="history-button">Show history here</button>
+</div>
 <div id="myMap" style="width: 100%; height: 500px"></div>
+{% endblock %}
+
+{% block map_styles %}
+<style>
+    #map-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        width: 100%;
+        gap: 0.25rem 1rem;
+        margin-top: 0.5rem;
+    }
+
+    #map-stats small {
+        color: #606c76;
+    }
+</style>
 {% endblock %}
