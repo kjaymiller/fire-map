@@ -1,0 +1,313 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div id="manage-section">
+    <h2>Notification manager</h2>
+
+    <div id="manage-logged-out" style="display: none">
+        <p><a href="/login">Log in</a> to view your alert areas and how they've triggered.</p>
+    </div>
+
+    <div id="manage-logged-in" style="display: none">
+        <h3>Your alert areas</h3>
+        <p id="manage-status"></p>
+        <table id="subscriptions-table" style="display: none">
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Latitude</th>
+                    <th>Longitude</th>
+                    <th>Radius (mi)</th>
+                    <th>Created</th>
+                    <th></th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="subscriptions-body"></tbody>
+        </table>
+        <div id="subscription-history" style="display: none">
+            <h4 id="subscription-history-title"></h4>
+            <p id="subscription-history-status"></p>
+            <ul id="subscription-history-list"></ul>
+        </div>
+
+        <h3>Recent triggers</h3>
+        <p>
+            Every time a reload finds a detection inside one of your areas, it
+            shows up here &mdash; whether or not it actually reached you.
+            <em>Delivered</em> means at least one of your
+            <a href="/manage-notifications">notification channels</a> got it;
+            <em>failed</em> means a channel was registered but the send
+            didn't go through; <em>no channels</em> means the alert had
+            nowhere to go because none were registered yet at the time.
+        </p>
+        <p id="events-status"></p>
+        <table id="events-table" style="display: none">
+            <thead>
+                <tr>
+                    <th>Area</th>
+                    <th>Distance (mi)</th>
+                    <th>Detected</th>
+                    <th>Status</th>
+                    <th>Channels</th>
+                    <th>Triggered</th>
+                </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+    .status-badge {
+        display: inline-block;
+        padding: 0.1rem 0.7rem;
+        border-radius: 1rem;
+        font-size: 1.1rem;
+    }
+
+    .status-delivered { background: #e3f6e8; color: #1a7f37; }
+    .status-failed { background: #fbeaea; color: #c22a2a; }
+    .status-no_channels { background: #fdf3e3; color: #a6650a; }
+    .status-queued { background: #eef1f4; color: #606c76; }
+</style>
+
+<script>
+    var STATUS_LABELS = {
+        delivered: 'Delivered',
+        failed: 'Failed',
+        no_channels: 'No channels',
+        queued: 'Queued'
+    };
+
+    // Keyed by subscriber id so the trigger table can show a short label
+    // (rather than a bare id) for which area each event belongs to.
+    var subscribersById = {};
+
+    function areaLabel(subscriberId) {
+        var sub = subscribersById[subscriberId];
+        if (!sub) {
+            return 'Area #' + subscriberId;
+        }
+        return sub.latitude.toFixed(3) + ', ' + sub.longitude.toFixed(3) + ' (' + sub.radius_miles + ' mi)';
+    }
+
+    function renderSubscriptions(subs) {
+        var table = document.getElementById('subscriptions-table');
+        var body = document.getElementById('subscriptions-body');
+        body.innerHTML = '';
+
+        subscribersById = {};
+        subs.forEach(function (sub) { subscribersById[sub.id] = sub; });
+
+        if (!subs.length) {
+            table.style.display = 'none';
+            document.getElementById('manage-status').textContent = 'No alert areas yet.';
+            return;
+        }
+
+        table.style.display = '';
+        subs.forEach(function (sub) {
+            var row = document.createElement('tr');
+
+            [sub.contact, sub.latitude, sub.longitude, sub.radius_miles, sub.created_at].forEach(function (value) {
+                var cell = document.createElement('td');
+                cell.textContent = value;
+                row.appendChild(cell);
+            });
+
+            var historyCell = document.createElement('td');
+            var historyButton = document.createElement('button');
+            historyButton.textContent = 'History';
+            historyButton.addEventListener('click', function () {
+                loadSubscriptionHistory(sub);
+            });
+            historyCell.appendChild(historyButton);
+            row.appendChild(historyCell);
+
+            var actionCell = document.createElement('td');
+            var cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Cancel';
+            cancelButton.addEventListener('click', function () {
+                cancelSubscription(sub.id);
+            });
+            actionCell.appendChild(cancelButton);
+            row.appendChild(actionCell);
+
+            body.appendChild(row);
+        });
+    }
+
+    function renderEvents(events) {
+        var table = document.getElementById('events-table');
+        var body = document.getElementById('events-body');
+        body.innerHTML = '';
+
+        if (!events.length) {
+            table.style.display = 'none';
+            document.getElementById('events-status').textContent = 'No triggers yet.';
+            return;
+        }
+
+        table.style.display = '';
+        document.getElementById('events-status').textContent = '';
+
+        events.forEach(function (event) {
+            var row = document.createElement('tr');
+
+            [
+                areaLabel(event.subscriber_id),
+                event.distance_miles,
+                event.detected_at,
+            ].forEach(function (value) {
+                var cell = document.createElement('td');
+                cell.textContent = value;
+                row.appendChild(cell);
+            });
+
+            var statusCell = document.createElement('td');
+            var badge = document.createElement('span');
+            badge.className = 'status-badge status-' + event.status;
+            badge.textContent = STATUS_LABELS[event.status] || event.status;
+            statusCell.appendChild(badge);
+            row.appendChild(statusCell);
+
+            var channelsCell = document.createElement('td');
+            channelsCell.textContent = event.channels_delivered.length
+                ? event.channels_delivered.join(', ')
+                : '—';
+            row.appendChild(channelsCell);
+
+            var triggeredCell = document.createElement('td');
+            triggeredCell.textContent = event.created_at;
+            row.appendChild(triggeredCell);
+
+            body.appendChild(row);
+        });
+    }
+
+    function loadSubscriptions() {
+        var status = document.getElementById('manage-status');
+        status.textContent = 'Loading…';
+
+        return fetch('/subscribers/mine', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (subs) {
+                status.textContent = '';
+                renderSubscriptions(subs);
+            })
+            .catch(function (err) {
+                document.getElementById('subscriptions-table').style.display = 'none';
+                status.textContent = 'Could not load alert areas: ' + err.message;
+            });
+    }
+
+    // Backed by /subscribers/{id}/history -- cached server-side (see
+    // web/app.py's HISTORY_AREA_CACHE_TTL_SECONDS) since it's the same
+    // fixed point on every click, unlike the map's "show history here"
+    // button (an arbitrary viewport, not worth caching).
+    function loadSubscriptionHistory(sub) {
+        var container = document.getElementById('subscription-history');
+        var title = document.getElementById('subscription-history-title');
+        var status = document.getElementById('subscription-history-status');
+        var list = document.getElementById('subscription-history-list');
+
+        container.style.display = '';
+        title.textContent = 'History near ' + areaLabel(sub.id);
+        status.textContent = 'Loading…';
+        list.innerHTML = '';
+
+        fetch('/subscribers/' + sub.id + '/history', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (rows) {
+                if (!rows.length) {
+                    status.textContent = 'No past detections found within this area.';
+                    return;
+                }
+                status.textContent = rows.length + ' past detection(s) within this area:';
+                rows.forEach(function (row) {
+                    var item = document.createElement('li');
+                    item.textContent = (
+                        row.distance_miles.toFixed(1) + ' mi away — ' +
+                        row.confidence + ' confidence, detected ' + row.acq_datetime
+                    );
+                    list.appendChild(item);
+                });
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not load history: ' + err.message;
+            });
+    }
+
+    function loadEvents() {
+        var status = document.getElementById('events-status');
+        status.textContent = 'Loading…';
+
+        fetch('/notification-events/mine', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (events) {
+                renderEvents(events);
+            })
+            .catch(function (err) {
+                document.getElementById('events-table').style.display = 'none';
+                status.textContent = 'Could not load trigger history: ' + err.message;
+            });
+    }
+
+    function cancelSubscription(id) {
+        var status = document.getElementById('manage-status');
+        status.textContent = 'Cancelling…';
+
+        fetch('/subscribers/' + id, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                status.textContent = 'Cancelled.';
+                loadSubscriptions();
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not cancel that subscription: ' + err.message;
+            });
+    }
+
+    // Logged-in state comes from the session cookie set by /login. Areas
+    // load first since the trigger table's area labels depend on them.
+    fetch('/me', { credentials: 'same-origin' })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+            if (!data.username) {
+                document.getElementById('manage-logged-out').style.display = '';
+                return;
+            }
+            document.getElementById('manage-logged-in').style.display = '';
+            loadSubscriptions().then(loadEvents);
+        });
+</script>
+{% endblock %}

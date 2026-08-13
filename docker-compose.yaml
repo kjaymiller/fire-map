@@ -1,0 +1,144 @@
+services:
+  postgres:
+    # PostGIS on top of the same postgres:16 base -- the area-history query
+    # (src/db/postgres.py's get_history_in_area) needs ST_DWithin over a
+    # geography column, which plain postgres doesn't have.
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-firemap}
+      POSTGRES_USER: ${POSTGRES_USER:-firemap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-firemap}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-firemap}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    # MSETEX and HGETDEL (src/db/cache.py, src/db/notify.py) need Valkey 9.1+.
+    image: valkey/valkey:9.1-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      VALKEY_HOST: valkey
+      NASA_FIRMS_API_KEY: ${NASA_FIRMS_API_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # No curl/wget in the slim image -- use the venv's own python instead.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "src.scheduler"]
+    depends_on:
+      web:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      WEB_URL: http://web:8000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+
+  notifier:
+    # Drains queued location alerts (src/db/notify.py) and sends them via
+    # Apprise (see src/notifier.py) to each recipient's registered channels
+    # (email, discord). Talks to Postgres/Valkey directly -- no HTTP hop
+    # through web.
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "src.notifier"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      VALKEY_HOST: valkey
+      # Mailgun creds for email channels (see src/db/channels.py). Set via
+      # fnox (like NASA_FIRMS_API_KEY above) rather than the .env file --
+      # `mise run up` runs under `fnox exec` so these get substituted in
+      # from the encrypted store, never committed as plaintext.
+      NOTIFY_MAILGUN_DOMAIN: ${NOTIFY_MAILGUN_DOMAIN:-}
+      NOTIFY_MAILGUN_API_KEY: ${NOTIFY_MAILGUN_API_KEY:-}
+      NOTIFY_MAILGUN_FROM_USER: ${NOTIFY_MAILGUN_FROM_USER:-alerts}
+      NOTIFY_MAILGUN_REGION: ${NOTIFY_MAILGUN_REGION:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+
+  otel-collector:
+    # Sits between the app and wherever telemetry lands (see
+    # otel-collector-config.yaml) -- traces on to Jaeger, logs to stdout
+    # for now. The app always points OTEL_EXPORTER_OTLP_ENDPOINT here, so
+    # swapping backends later is a config-file change, not an app change.
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      jaeger:
+        condition: service_started
+    ports:
+      - "4318:4318" # OTLP/HTTP receiver
+      - "4317:4317" # OTLP/gRPC receiver
+
+  jaeger:
+    # All-in-one Jaeger: in-memory storage, OTLP ingestion, and the trace
+    # viewer UI, all in one container -- no separate collector needed for
+    # local dev. Traces don't survive a restart (in-memory only).
+    #
+    # Not exposed to the host directly -- the otel-collector above is the
+    # only thing that talks to it, forwarding on the traces it receives.
+    image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # trace viewer UI
+
+volumes:
+  postgres_data:

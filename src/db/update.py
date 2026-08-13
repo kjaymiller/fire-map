@@ -1,49 +1,52 @@
-import os
-import dotenv
 import logging
-import asyncio
+import uuid
 
+from geojson import FeatureCollection
 
-dotenv.load_dotenv()
-
-
-from azure.cosmos import PartitionKey
-
-from .db import async_client as client
-
-from .db import (
-    COSMOS_DB,
-    COSMOS_CONTAINER,
-)
-from src.db.db import write_to_cosmos
 from src.viirs.get_fire_data import get_fire_data
 
+from . import UPDATE_INTERVAL_SECONDS, cache, notify
+from .postgres import init_db, insert_detections
 
-COUNTRY = "USA"
+logger = logging.getLogger(__name__)
 
-async def rebuild_container(
-    database: str = COSMOS_DB,
-    container: str = COSMOS_CONTAINER,
-    ttl_seconds: int = 3600,
-):
-    """Delete the existing container and create a new one with the same name.
-    
-    If ttl_seconds is not 0, the container's contents will delete themselves after the given number of seconds.
+
+def reload_data(ttl: int = UPDATE_INTERVAL_SECONDS) -> FeatureCollection:
+    """Fetch fresh (global) fire data, append it to Postgres history under a
+    single scan_id, and refresh the Valkey "current" cache. Returns the
+    snapshot that was cached.
     """
-    async with client:
-        logging.warning("Deleting container")
-        db = client.get_database_client(database=database)
-        await db.delete_container(container=container)
+    scan_id = uuid.uuid7()
+    logger.info(f"Reloading fire data ({scan_id=})")
+    features = list(get_fire_data())
 
-        logging.warning("Creating container")
-        await db.create_container(
-            id=container,
-            partition_key=PartitionKey(path="/id", kind="Hash"),
-            default_ttl=ttl_seconds,
-            )
-        logging.warning(f"Finished cleaning {container=}")
-        return db.get_container_client(container)
+    if not features:
+        # FIRMS occasionally returns an empty response for a fetch (rate
+        # limiting, a transient error, a day-boundary hiccup). Nothing gets
+        # written to Postgres in that case (see insert_detections), so don't
+        # blow away a good cached snapshot with an empty one either -- just
+        # keep serving what's already cached until the next reload succeeds.
+        logger.warning(f"Fetched 0 detections ({scan_id=}); keeping existing cache")
+        cached = cache.get_current()
+        if cached is not None:
+            return cached
+        return FeatureCollection(features)
+
+    insert_detections(features, scan_id=scan_id)
+
+    feature_collection = FeatureCollection(features)
+    feature_collection["scan_id"] = str(scan_id)
+    cache.set_current(feature_collection, ttl=ttl)
+
+    queued = notify.queue_notifications(features, scan_id=scan_id)
+    if queued:
+        logger.info(f"Queued {queued} location alerts for ({scan_id=})")
+
+    logger.info(f"Reload complete: {len(features)} detections ({scan_id=})")
+    return feature_collection
+
 
 if __name__ == "__main__":
-    asyncio.run(rebuild_container())
-    write_to_cosmos(get_fire_data(country=COUNTRY))
+    logging.basicConfig(level=logging.INFO)
+    init_db()
+    reload_data()

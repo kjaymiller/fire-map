@@ -1,0 +1,58 @@
+[project]
+name = "fire-map"
+version = "0.1.0"
+description = "Display Fire Data from Around the World using NASA's FIRMS API."
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "jinja2",
+    "geojson",
+    "python-dotenv",
+    "httpx",
+    "more-itertools",
+    "psycopg[binary]",
+    "psycopg-pool",
+    "valkey",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-instrumentation-fastapi>=0.65b0",
+    "opentelemetry-instrumentation-psycopg>=0.65b0",
+    "opentelemetry-instrumentation-logging>=0.65b0",
+    "opentelemetry-instrumentation-httpx>=0.65b0",
+    "itsdangerous>=2.2.0",
+    "apprise>=1.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "ty>=0.0.69",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade -- modern syntax for the target version above
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "LOG",  # flake8-logging
+    "ANN",  # flake8-annotations -- require type hints
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "ANN401",  # typing.Any is fine where a value is genuinely dynamic
+]
+
+[tool.ty.environment]
+python-version = "3.14"

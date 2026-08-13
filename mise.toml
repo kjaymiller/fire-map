@@ -1,0 +1,50 @@
+[tools]
+python = "3.14"
+uv = "latest"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.install]
+description = "Install dependencies with uv"
+run = "uv sync"
+
+[tasks.up]
+description = "Build and start the full stack (web, postgres, valkey, scheduler, notifier)"
+run = "fnox exec -- docker compose up --build"
+
+[tasks.down]
+description = "Stop the stack"
+run = "docker compose down"
+
+[tasks.reload]
+description = "Trigger a manual data reload against a running stack"
+run = "curl -X POST http://localhost:8000/reload"
+
+[tasks.reload-web]
+description = "Rebuild/restart the web service with fnox secrets loaded, then trigger a reload"
+run = "fnox exec -- docker compose up -d --build web"
+
+[tasks.lint]
+description = "Lint with ruff"
+run = "uv run ruff check ."
+
+[tasks.fmt]
+description = "Format with ruff"
+run = "uv run ruff format ."
+
+[tasks.valkey-cli]
+description = "Open valkey-cli against the running Valkey instance"
+run = "valkey-cli -h ${VALKEY_HOST:-localhost} -p ${VALKEY_PORT:-6379}"
+
+[tasks.psql]
+description = "Open psql against the running PostgreSQL instance"
+run = "PGPASSWORD=${POSTGRES_PASSWORD:-firemap} psql -h ${POSTGRES_HOST:-localhost} -p ${POSTGRES_PORT:-5432} -U ${POSTGRES_USER:-firemap} -d ${POSTGRES_DB:-firemap}"
+
+[tasks.traces]
+description = "Open the Jaeger trace viewer UI for the running stack"
+run = "open http://localhost:16686"
+
+[tasks.notifier-logs]
+description = "Follow logs for the notifier service (Apprise sends, claim batches)"
+run = "docker compose logs -f notifier"
