@@ -57,3 +57,11 @@ HISTORY_AREA_CACHE_KEY_PREFIX = "firemap:history_area:"
 HISTORY_AREA_CACHE_TTL_SECONDS = int(
     os.environ.get("HISTORY_AREA_CACHE_TTL_SECONDS", str(UPDATE_INTERVAL_SECONDS))
 )
+
+# Guards against a cold/expired cache being reloaded more than once at a
+# time -- see update.reload_data_guarded. A plain SET NX, not a per-process
+# lock, since web can run as more than one process/container; the TTL is a
+# safety net so a holder that crashes mid-reload doesn't wedge every future
+# reload behind it forever.
+RELOAD_LOCK_KEY = "firemap:reload:lock"
+RELOAD_LOCK_TTL_SECONDS = int(os.environ.get("RELOAD_LOCK_TTL_SECONDS", "60"))

@@ -17,7 +17,13 @@ from typing import Any, cast
 import valkey
 from geojson import Feature, FeatureCollection
 
-from . import CURRENT_CACHE_KEY, EVENT_KEY_PREFIX, UPDATE_INTERVAL_SECONDS, VALKEY_URL
+from . import (
+    CURRENT_CACHE_KEY,
+    EVENT_KEY_PREFIX,
+    RELOAD_LOCK_KEY,
+    UPDATE_INTERVAL_SECONDS,
+    VALKEY_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,24 @@ def get_current() -> FeatureCollection | None:
     feature_collection = FeatureCollection(features)
     feature_collection["scan_id"] = index.get("scan_id")
     return feature_collection
+
+
+def acquire_reload_lock(ttl: int) -> bool:
+    """Try to claim the single "a reload is in flight" slot for `ttl`
+    seconds. True if this caller won it, False if someone else already
+    holds it.
+
+    A plain SET NX rather than a threading.Lock -- web can run as more than
+    one process/container, and only Valkey is shared across all of them.
+    """
+    return bool(get_client().set(RELOAD_LOCK_KEY, "1", nx=True, ex=ttl))
+
+
+def release_reload_lock() -> None:
+    """Release the reload-in-flight slot, if this caller (or anyone) holds
+    it. Safe to call even if the lock already expired on its own.
+    """
+    get_client().delete(RELOAD_LOCK_KEY)
 
 
 def get_cached_json(key: str) -> Any | None:
