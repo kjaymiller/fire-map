@@ -30,7 +30,7 @@ from src.db import (
     users,
 )
 from src.db.postgres import get_history, get_history_in_area, get_scans, init_db
-from src.db.update import reload_data
+from src.db.update import reload_data_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ async def lifespan(_app: fastapi.FastAPI) -> AsyncIterator[None]:
     notification_log.init_db()
     if cache.get_current() is None:
         logger.info("Cache empty on startup, running an initial reload")
-        reload_data()
+        reload_data_guarded()
     yield
 
 
@@ -155,7 +155,7 @@ def index(request: Request) -> HTMLResponse:
     feature_collection = cache.get_current()
 
     if feature_collection is None:
-        feature_collection = reload_data()
+        feature_collection = reload_data_guarded()
 
     confidences = get_confidence_breakdown(feature_collection["features"])
     scans = get_scans(limit=1)
@@ -254,8 +254,14 @@ def me(request: Request) -> dict[str, str | None]:
 
 @api.post("/reload")
 def reload() -> JSONResponse:
-    """Fetch fresh (global) data, persist it, and return the snapshot read back from Valkey."""
-    reload_data()
+    """Fetch fresh (global) data, persist it, and return the snapshot read back from Valkey.
+
+    Guarded the same way as the cache-miss reloads below -- if the
+    scheduler's interval and a manually-triggered reload land at the same
+    moment, this waits for whichever one is already in flight instead of
+    also running its own.
+    """
+    reload_data_guarded()
     return JSONResponse(cache.get_current())
 
 
@@ -265,7 +271,7 @@ def current() -> JSONResponse:
     feature_collection = cache.get_current()
 
     if feature_collection is None:
-        reload_data()
+        reload_data_guarded()
         feature_collection = cache.get_current()
 
     return JSONResponse(feature_collection)

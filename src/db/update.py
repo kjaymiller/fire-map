@@ -1,14 +1,19 @@
 import logging
+import time
 import uuid
 
 from geojson import FeatureCollection
 
 from src.viirs.get_fire_data import get_fire_data
 
-from . import UPDATE_INTERVAL_SECONDS, cache, notify
+from . import RELOAD_LOCK_TTL_SECONDS, UPDATE_INTERVAL_SECONDS, cache, notify
 from .postgres import init_db, insert_detections
 
 logger = logging.getLogger(__name__)
+
+# How often to check whether an in-flight reload elsewhere has landed, while
+# waiting on it instead of duplicating it -- see reload_data_guarded.
+RELOAD_WAIT_POLL_SECONDS = 0.2
 
 
 def reload_data(ttl: int = UPDATE_INTERVAL_SECONDS) -> FeatureCollection:
@@ -44,6 +49,43 @@ def reload_data(ttl: int = UPDATE_INTERVAL_SECONDS) -> FeatureCollection:
 
     logger.info(f"Reload complete: {len(features)} detections ({scan_id=})")
     return feature_collection
+
+
+def reload_data_guarded(ttl: int = UPDATE_INTERVAL_SECONDS) -> FeatureCollection:
+    """Like reload_data, but only one reload actually runs at a time --
+    across every request, thread, and web process/container, not just this
+    one caller.
+
+    index()/current()/lifespan() in web/app.py each independently reload on
+    a cache miss with no coordination between them, and reload_data() does
+    a live FIRMS fetch plus Postgres/Valkey writes -- slow enough, and
+    blocking enough (network + DB I/O releases the GIL), that two requests
+    hitting a cold cache at once would otherwise both actually run it:
+    double the Postgres scan rows and, if FIRMS' response shifts between
+    the two live fetches, double the queued notifications too. A caller
+    that loses the race here waits for the winner's reload to land in the
+    cache instead.
+    """
+    if cache.acquire_reload_lock(RELOAD_LOCK_TTL_SECONDS):
+        try:
+            return reload_data(ttl=ttl)
+        finally:
+            cache.release_reload_lock()
+
+    logger.info("Reload already in progress elsewhere; waiting for it instead of duplicating it")
+    deadline = time.monotonic() + RELOAD_LOCK_TTL_SECONDS
+    while time.monotonic() < deadline:
+        cached = cache.get_current()
+        if cached is not None:
+            return cached
+        time.sleep(RELOAD_WAIT_POLL_SECONDS)
+
+    # The winner's reload didn't land before our own wait ran out (it's
+    # taking longer than RELOAD_LOCK_TTL_SECONDS, or it crashed after
+    # claiming the lock but before the TTL expired) -- fall back to doing
+    # it ourselves rather than serving nothing indefinitely.
+    logger.warning("Timed out waiting for in-flight reload; reloading directly")
+    return reload_data(ttl=ttl)
 
 
 if __name__ == "__main__":
