@@ -26,7 +26,6 @@ from src.db import (
     cache,
     channels,
     notification_log,
-    notify,
     subscribers,
     users,
 )
@@ -392,8 +391,9 @@ def create_subscriber(
     """Register a location + radius for fire alerts. Requires login.
 
     Every reload, freshly fetched detections within `radius_miles` of this
-    point get queued as a notification (see /notifications/{scan_id}), sent
-    to whichever channels you've registered on /manage-notifications.
+    point get queued as a notification and drained by the notifier service
+    (see src/notifier.py), sent to whichever channels you've registered on
+    /manage-notifications.
     """
     subscriber_id = subscribers.add_subscriber(
         owner=username,
@@ -489,16 +489,3 @@ def delete_channel(
             detail="No channel with that id owned by this account",
         )
     return {"status": "removed"}
-
-
-@api.get("/notifications/{scan_id}")
-def claim_notifications(
-    scan_id: str,
-    limit: int = 50,
-    username: str = CurrentUser,
-) -> list[dict[str, Any]]:
-    """Claim (retrieve + remove) up to `limit` pending location alerts for a
-    scan. Requires login. Meant for a notification worker to poll --
-    anything not claimed here stays queued for the next call.
-    """
-    return notify.claim_notifications(scan_id, limit=limit)
