@@ -228,8 +228,21 @@ def drain_scan(scan_id: str) -> None:
     notification_events row (see notify.queue_notifications) gets updated
     with the outcome -- delivered, failed, or no_channels -- so /manage's
     trigger history reflects what actually happened.
+
+    claim_notifications' HGETDEL has already removed the batch from Valkey
+    by the time any of the bookkeeping below runs, so a failure past that
+    point can't be retried by picking the scan back up -- everything after
+    the claim is therefore its own try/except, logged and skipped rather
+    than left to propagate. That keeps one scan's bookkeeping failure from
+    also taking down `run`'s loop and, with it, every *other* scan still
+    waiting to be claimed.
     """
-    batch = notify.claim_notifications(scan_id, limit=CLAIM_BATCH_SIZE)
+    try:
+        batch = notify.claim_notifications(scan_id, limit=CLAIM_BATCH_SIZE)
+    except Exception:
+        logger.exception(f"Failed to claim notifications for scan {scan_id}")
+        return
+
     if not batch:
         return
 
@@ -256,15 +269,21 @@ def drain_scan(scan_id: str) -> None:
             notification_log.mark_failed(event_ids)
 
     unattempted_ids = [n["event_id"] for n in batch if n["event_id"] not in attempted_ids]
-    notification_log.mark_no_channels(unattempted_ids)
+    try:
+        notification_log.mark_no_channels(unattempted_ids)
+    except Exception:
+        logger.exception(f"Failed to mark no-channel notification(s) for scan {scan_id}")
 
     logger.info(
         f"Sent {sent}/{len(grouped)} channel batch(es) for scan {scan_id} "
         f"({len(batch)} notification(s) total)"
     )
 
-    if notify.pending_count(scan_id) > 0:
-        notify.requeue_scan_id(scan_id)
+    try:
+        if notify.pending_count(scan_id) > 0:
+            notify.requeue_scan_id(scan_id)
+    except Exception:
+        logger.exception(f"Failed to check/requeue remaining notifications for scan {scan_id}")
 
 
 def run() -> None:
@@ -273,7 +292,10 @@ def run() -> None:
         scan_id = notify.next_scan_id(timeout=POLL_TIMEOUT_SECONDS)
         if scan_id is None:
             continue
-        drain_scan(scan_id)
+        try:
+            drain_scan(scan_id)
+        except Exception:  # a scan-level failure shouldn't kill the worker either
+            logger.exception(f"Failed to drain scan {scan_id}")
 
 
 if __name__ == "__main__":
