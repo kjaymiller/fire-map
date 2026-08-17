@@ -70,6 +70,38 @@
     .history-popup {
         font-size: 1.2rem;
     }
+
+    #map-search {
+        position: relative;
+    }
+
+    #map-search-input {
+        width: 16rem;
+    }
+
+    #map-search-results {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        z-index: 1000;
+        width: 16rem;
+        background: #fff;
+        border: 0.1rem solid #e1e1e1;
+        max-height: 12rem;
+        overflow-y: auto;
+    }
+
+    #map-search-results li {
+        padding: 0.3rem 0.6rem;
+        cursor: pointer;
+    }
+
+    #map-search-results li:hover {
+        background: #eef1f4;
+    }
 </style>
 <script type="text/javascript">
     function InitMap()
@@ -225,15 +257,11 @@
             return hot;
         }
 
-        // Fetched once up front so both the marker popups below and the
-        // empty-map popup (further down) can tell, by the time anyone
-        // actually clicks something, whether to show the subscribe form or
-        // a login prompt -- built lazily per popup rather than once at
-        // startup, since this hasn't necessarily resolved yet at that point.
-        var currentUsername = null;
-        fetch('/me', { credentials: 'same-origin' })
-            .then(function (response) { return response.json(); })
-            .then(function (data) { currentUsername = data.username; });
+        // Logged-in state is already known server-side (see index() in
+        // web/app.py, which this template is included into) -- no need to
+        // round-trip to /me just to ask again, and no race with a popup
+        // opening before that fetch would have resolved.
+        var currentUsername = {{ current_user | tojson }};
 
         // Shared by both marker popups (centered on that detection) and the
         // empty-map popup (centered on the clicked point) -- the only
@@ -564,11 +592,88 @@
         // "meaningful area" threshold.
         map.on('zoomend', updateHistoryButtonVisibility);
         updateHistoryButtonVisibility();
+
+        // City search: debounced search-as-you-type against /towns/search
+        // (cached server-side, see web/app.py -- the same city name gets
+        // searched over and over across everyone typing it), zooming the
+        // map to whichever result gets picked. Same debounce/stale-request
+        // pattern as the city-alert search on /notify -- see subscribe.html.
+        var CITY_ZOOM_LEVEL = 9;
+        var citySearchTimer = null;
+        var citySearchToken = 0;
+        var searchInput = document.getElementById('map-search-input');
+        var searchResults = document.getElementById('map-search-results');
+
+        function clearCitySearchResults() {
+            searchResults.innerHTML = '';
+        }
+
+        function goToCity(town) {
+            var latlng = L.latLng(town.latitude, town.longitude);
+            map.flyTo(latlng, CITY_ZOOM_LEVEL);
+
+            var label = [town.name, town.admin1_code, town.country_code].filter(Boolean).join(', ');
+            L.popup().setLatLng(latlng).setContent('<strong>' + label + '</strong>').openOn(map);
+        }
+
+        searchInput.addEventListener('input', function (event) {
+            var query = event.target.value.trim();
+
+            window.clearTimeout(citySearchTimer);
+            clearCitySearchResults();
+            if (!query) {
+                return;
+            }
+
+            citySearchTimer = window.setTimeout(function () {
+                var token = ++citySearchToken;
+                fetch('/towns/search?q=' + encodeURIComponent(query), { credentials: 'same-origin' })
+                    .then(function (response) { return response.json(); })
+                    .then(function (towns) {
+                        if (token !== citySearchToken) {
+                            return; // a newer keystroke's search has already superseded this one
+                        }
+                        clearCitySearchResults();
+                        towns.forEach(function (town) {
+                            var label = [town.name, town.admin1_code, town.country_code].filter(Boolean).join(', ');
+                            var item = document.createElement('li');
+                            item.textContent = label;
+                            item.addEventListener('click', function () {
+                                searchInput.value = label;
+                                clearCitySearchResults();
+                                goToCity(town);
+                            });
+                            searchResults.appendChild(item);
+                        });
+                    });
+            }, 250);
+        });
+
+        // Enter jumps to the top result instead of requiring a click, and
+        // clicking anywhere outside the results list dismisses it.
+        searchInput.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                var first = searchResults.querySelector('li');
+                if (first) {
+                    first.click();
+                }
+            }
+        });
+        document.addEventListener('click', function (event) {
+            if (!document.getElementById('map-search').contains(event.target)) {
+                clearCitySearchResults();
+            }
+        });
     }
 </script>
 {% endblock %}
 {% block content %}
 <div id="map-controls">
+    <div id="map-search">
+        <input type="text" id="map-search-input" placeholder="Search for a city…" autocomplete="off" maxlength="100">
+        <ul id="map-search-results"></ul>
+    </div>
     <label for="show-all-readings">
         <input type="checkbox" id="show-all-readings">
         Show all readings (including low confidence)

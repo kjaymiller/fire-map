@@ -152,18 +152,16 @@
             });
     }
 
-    // Logged-in state comes from the session cookie set by /login.
-    fetch('/me', { credentials: 'same-origin' })
-        .then(function (response) { return response.json(); })
-        .then(function (data) {
-            if (data.username) {
-                document.getElementById('account-logged-in').style.display = '';
-                updateAddressField();
-                loadChannels();
-            } else {
-                document.getElementById('account-logged-out').style.display = '';
-            }
-        });
+    // Logged-in state is already known server-side (see
+    // manage_notifications_page in web/app.py) -- no need to round-trip to
+    // /me just to ask again.
+    if ({{ current_user | tojson }}) {
+        document.getElementById('account-logged-in').style.display = '';
+        updateAddressField();
+        loadChannels();
+    } else {
+        document.getElementById('account-logged-out').style.display = '';
+    }
 
     document.getElementById('channel-type').addEventListener('change', updateAddressField);
 

@@ -65,3 +65,34 @@ HISTORY_AREA_CACHE_TTL_SECONDS = int(
 # reload behind it forever.
 RELOAD_LOCK_KEY = "firemap:reload:lock"
 RELOAD_LOCK_TTL_SECONDS = int(os.environ.get("RELOAD_LOCK_TTL_SECONDS", "60"))
+
+# A detection farther than this from the nearest row in `cities` isn't
+# considered "near" any town -- open ocean, deep wilderness, etc. -- so it's
+# labeled/cached as such rather than tagged with whatever city happened to
+# be least-far-away.
+NEAREST_TOWN_MAX_DISTANCE_MILES = float(os.environ.get("NEAREST_TOWN_MAX_DISTANCE_MILES", "50"))
+
+# Namespaces the cached result of a city-name search (see cities.py's
+# search_cities and the /towns/search route) -- keyed on the query text
+# itself, which repeats heavily: every viewer typing a common prefix
+# ("spr...") hits the same cache entry, and the same person's own
+# keystrokes re-search shrinking/growing prefixes of what they already
+# typed.
+TOWN_SEARCH_CACHE_KEY_PREFIX = "firemap:town_search:"
+
+# The `cities` table only changes when someone reruns the `load-cities`
+# mise task (see cities.py's load_geonames) -- nothing in the normal
+# request/reload cycle touches it -- so search results can sit far longer
+# than the detection-freshness caches above without ever going stale in a
+# way that matters. Defaults to a day; override if you're actively
+# reloading the dataset and want to see it reflected sooner.
+TOWN_SEARCH_CACHE_TTL_SECONDS = int(
+    os.environ.get("TOWN_SEARCH_CACHE_TTL_SECONDS", str(24 * 60 * 60))
+)
+
+# Namespaces the cached result of a city's full detection history (see
+# city_history.py and the /towns/{geoname_id}/history route) -- unlike the
+# search cache above, this table grows every reload, so it uses the same
+# reload-bound TTL as HISTORY_AREA_CACHE_TTL_SECONDS (just its own prefix,
+# since the two cache different queries against different tables).
+TOWN_HISTORY_CACHE_KEY_PREFIX = "firemap:town_history:"

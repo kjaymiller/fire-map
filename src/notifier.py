@@ -60,23 +60,54 @@ def maps_link(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps?q={lat:.4f},{lon:.4f}"
 
 
+def town_label(notification: dict[str, Any]) -> str | None:
+    """'Springfield, IL, US' for a notification with a resolved nearest
+    town (see notify.queue_notifications), or None if the detection was too
+    far from anything in the cities table to label (see cities.nearest_city).
+    """
+    town = notification.get("town")
+    if town is None:
+        return None
+    parts = [town["name"]]
+    parts.extend(part for part in (town.get("admin1_code"), town.get("country_code")) if part)
+    return ", ".join(parts)
+
+
 def group_by_area(
     notifications: list[dict[str, Any]],
 ) -> list[list[dict[str, Any]]]:
-    """Split one recipient's notifications by alert area (subscriber_id),
-    each sorted by distance -- an owner with more than one area would
-    otherwise see one flattened list mixing distances relative to
-    different centers (0.2 mi from one area, 90 mi from another, with no
-    indication which area either number is relative to).
+    """Split one recipient's notifications by alert area, each sorted by
+    distance -- an owner with more than one area would otherwise see one
+    flattened list mixing distances relative to different centers (0.2 mi
+    from one area, 90 mi from another, with no indication which area either
+    number is relative to).
+
+    Keyed on (subscription_kind, subscriber_id), not subscriber_id alone --
+    point and city subscriptions each have their own id sequence starting
+    at 1, so a bare id could collide across kinds.
     """
-    by_area: dict[int, list[dict[str, Any]]] = {}
+    by_area: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for notification in notifications:
-        by_area.setdefault(notification["subscriber_id"], []).append(notification)
+        key = (notification["subscription_kind"], notification["subscriber_id"])
+        by_area.setdefault(key, []).append(notification)
 
     groups = list(by_area.values())
     for group in groups:
         group.sort(key=lambda n: n["distance_miles"])
     return groups
+
+
+def area_header(area: dict[str, Any]) -> str:
+    """'Within 25 mi of 33.7, -84.4' for a point subscription, or 'Near
+    Springfield, IL, US' for a city one -- the label at the top of each
+    group in a batched alert (see render_html/render_markdown).
+    """
+    if area["subscription_kind"] == "city":
+        return f"Near {town_label(area) or 'your subscribed city'}"
+    return (
+        f"Within {area['sub_radius_miles']:g} mi of "
+        f"{area['sub_latitude']:.4f}, {area['sub_longitude']:.4f}"
+    )
 
 
 def build_title(notifications: list[dict[str, Any]]) -> str:
@@ -93,10 +124,7 @@ def render_html(notifications: list[dict[str, Any]]) -> str:
     sections = []
     for group in group_by_area(notifications):
         area = group[0]
-        header = (
-            f"<p><strong>Within {area['sub_radius_miles']:g} mi of "
-            f"{area['sub_latitude']:.4f}, {area['sub_longitude']:.4f}</strong></p>"
-        )
+        header = f"<p><strong>{html.escape(area_header(area))}</strong></p>"
 
         items = []
         for notification in group:
@@ -104,10 +132,12 @@ def render_html(notifications: list[dict[str, Any]]) -> str:
             props = feature["properties"]
             lon, lat = feature["geometry"]["coordinates"]
             satellite = html.escape(str(props.get("satellite", "unknown")))
+            town = town_label(notification)
+            near = f"near {html.escape(town)} " if town else ""
             items.append(
                 "<li>"
                 f"<strong>{notification['distance_miles']} mi away</strong> &mdash; "
-                f'<a href="{maps_link(lat, lon)}">{lat:.4f}, {lon:.4f}</a>, '
+                f'{near}<a href="{maps_link(lat, lon)}">{lat:.4f}, {lon:.4f}</a>, '
                 f"detected {format_detected_at(props.get('datetime', ''))} "
                 f"(satellite: {satellite})"
                 "</li>"
@@ -132,17 +162,16 @@ def render_markdown(notifications: list[dict[str, Any]]) -> str:
     sections = []
     for group in group_by_area(notifications):
         area = group[0]
-        lines = [
-            f"**Within {area['sub_radius_miles']:g} mi of "
-            f"{area['sub_latitude']:.4f}, {area['sub_longitude']:.4f}**"
-        ]
+        lines = [f"**{area_header(area)}**"]
         for notification in group:
             feature = notification["feature"]
             props = feature["properties"]
             lon, lat = feature["geometry"]["coordinates"]
+            town = town_label(notification)
+            near = f"near {town} " if town else ""
             lines.append(
                 f"- **{notification['distance_miles']} mi away** — "
-                f"[{lat:.4f}, {lon:.4f}]({maps_link(lat, lon)}), "
+                f"{near}[{lat:.4f}, {lon:.4f}]({maps_link(lat, lon)}), "
                 f"detected {format_detected_at(props.get('datetime', ''))} "
                 f"(satellite: {props.get('satellite', 'unknown')})"
             )

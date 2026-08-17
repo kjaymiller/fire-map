@@ -32,19 +32,48 @@
         </fieldset>
     </form>
     <p id="subscribe-status"></p>
+
+    <h2>...or a whole city</h2>
+    <p>
+        Prefer not to pick a point? Subscribe to a city instead &mdash;
+        by default you'll be matched whenever a detection's nearest city
+        (from a <a href="https://www.geonames.org/">GeoNames</a> lookup) is
+        the one you picked. Set a radius below to match by distance from
+        the city's own point instead, which also catches detections whose
+        nearest city happened to resolve to somewhere else nearby.
+    </p>
+
+    <form id="city-subscribe-form" style="display: none" autocomplete="off">
+        <fieldset>
+            <label for="city-subscribe-search">City</label>
+            <input type="text" id="city-subscribe-search" placeholder="Start typing a city name…" minlength="1" maxlength="100">
+            <ul id="city-subscribe-results"></ul>
+            <input type="hidden" id="city-subscribe-geoname-id" required>
+
+            <label for="city-subscribe-radius">Radius (miles, optional)</label>
+            <input type="number" id="city-subscribe-radius" name="radius_miles" step="any" min="1" max="500" placeholder="Exact city only">
+
+            <input type="submit" value="Notify me" disabled>
+        </fieldset>
+    </form>
+    <p id="city-subscribe-status"></p>
     <p><a href="/manage">Manage your existing subscriptions</a></p>
 </div>
 
+<style>
+    #city-subscribe-results { list-style: none; padding: 0; margin: 0.25rem 0; max-width: 22rem; }
+    #city-subscribe-results li { padding: 0.25rem 0.5rem; cursor: pointer; }
+    #city-subscribe-results li:hover { background: #eef1f4; }
+</style>
+
 <script>
-    // Logged-in state comes from the session cookie set by /login -- no
-    // credentials to collect on this page, `fetch` just sends the cookie
-    // along automatically for same-origin requests.
-    fetch('/me', { credentials: 'same-origin' })
-        .then(function (response) { return response.json(); })
-        .then(function (data) {
-            var target = data.username ? 'subscribe-form' : 'subscribe-logged-out';
-            document.getElementById(target).style.display = '';
-        });
+    // Logged-in state is already known server-side (see notify_page in
+    // web/app.py) -- no need to round-trip to /me just to ask again.
+    var currentUsername = {{ current_user | tojson }};
+    document.getElementById(currentUsername ? 'subscribe-form' : 'subscribe-logged-out').style.display = '';
+    if (currentUsername) {
+        document.getElementById('city-subscribe-form').style.display = '';
+    }
 
     document.getElementById('subscribe-form').addEventListener('submit', function (event) {
         event.preventDefault();
@@ -78,6 +107,95 @@
                     + payload.radius_miles + ' miles of that point on future reloads.';
                 form.reset();
                 form.radius_miles.value = 25;
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not save that subscription: ' + err.message;
+            });
+    });
+
+    // Debounced search-as-you-type against /towns/search -- a fresh
+    // keystroke cancels whatever lookup was still in flight for the
+    // previous one, so a slow response for "spring" can't clobber the
+    // results for "springfield" typed a moment later.
+    var citySearchTimer = null;
+    var citySearchToken = 0;
+
+    document.getElementById('city-subscribe-search').addEventListener('input', function (event) {
+        var query = event.target.value.trim();
+        var results = document.getElementById('city-subscribe-results');
+        var submitButton = document.getElementById('city-subscribe-form').querySelector('input[type=submit]');
+
+        document.getElementById('city-subscribe-geoname-id').value = '';
+        submitButton.disabled = true;
+
+        window.clearTimeout(citySearchTimer);
+        results.innerHTML = '';
+        if (!query) {
+            return;
+        }
+
+        citySearchTimer = window.setTimeout(function () {
+            var token = ++citySearchToken;
+            fetch('/towns/search?q=' + encodeURIComponent(query), { credentials: 'same-origin' })
+                .then(function (response) { return response.json(); })
+                .then(function (towns) {
+                    if (token !== citySearchToken) {
+                        return; // a newer keystroke's search has already superseded this one
+                    }
+                    results.innerHTML = '';
+                    towns.forEach(function (town) {
+                        var label = [town.name, town.admin1_code, town.country_code].filter(Boolean).join(', ');
+                        var item = document.createElement('li');
+                        item.textContent = label;
+                        item.addEventListener('click', function () {
+                            document.getElementById('city-subscribe-search').value = label;
+                            document.getElementById('city-subscribe-geoname-id').value = town.geoname_id;
+                            submitButton.disabled = false;
+                            results.innerHTML = '';
+                        });
+                        results.appendChild(item);
+                    });
+                });
+        }, 250);
+    });
+
+    document.getElementById('city-subscribe-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+
+        var status = document.getElementById('city-subscribe-status');
+        var geonameId = document.getElementById('city-subscribe-geoname-id').value;
+        if (!geonameId) {
+            status.textContent = 'Pick a city from the search results first.';
+            return;
+        }
+
+        var radiusInput = document.getElementById('city-subscribe-radius');
+        var radiusMiles = radiusInput.value ? parseFloat(radiusInput.value) : null;
+
+        status.textContent = 'Saving…';
+
+        fetch('/city-subscribers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ geoname_id: parseInt(geonameId, 10), radius_miles: radiusMiles })
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (data) {
+                status.textContent = 'Subscribed (id ' + data.id + '). ' + (
+                    radiusMiles
+                        ? 'You\'ll be matched against fires within ' + radiusMiles + ' miles of that city\'s point.'
+                        : 'You\'ll be matched against fires whose nearest city is the one you picked.'
+                );
+                document.getElementById('city-subscribe-form').reset();
+                document.getElementById('city-subscribe-geoname-id').value = '';
             })
             .catch(function (err) {
                 status.textContent = 'Could not save that subscription: ' + err.message;

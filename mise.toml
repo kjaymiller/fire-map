@@ -48,3 +48,7 @@ run = "open http://localhost:16686"
 [tasks.notifier-logs]
 description = "Follow logs for the notifier service (Apprise sends, claim batches)"
 run = "docker compose logs -f notifier"
+
+[tasks.load-cities]
+description = "Download GeoNames' cities500 dump and load it into the cities table (nearest-town lookups)"
+run = "fnox exec -- docker compose exec web uv run python -m src.db.cities"
