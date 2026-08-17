@@ -31,6 +31,32 @@
             <ul id="subscription-history-list"></ul>
         </div>
 
+        <h3>Your city alerts</h3>
+        <p id="city-manage-status"></p>
+        <table id="city-subscriptions-table" style="display: none">
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>City</th>
+                    <th>Radius (mi)</th>
+                    <th>Created</th>
+                    <th></th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="city-subscriptions-body"></tbody>
+        </table>
+        <div id="city-subscription-history" style="display: none">
+            <h4 id="city-subscription-history-title"></h4>
+            <p>
+                Every detection whose nearest city ever resolved to this one
+                shows up here &mdash; the full history, not just the ones
+                that triggered an alert for you.
+            </p>
+            <p id="city-subscription-history-status"></p>
+            <ul id="city-subscription-history-list"></ul>
+        </div>
+
         <h3>Recent triggers</h3>
         <p>
             Every time a reload finds a detection inside one of your areas, it
@@ -70,6 +96,9 @@
     .status-failed { background: #fbeaea; color: #c22a2a; }
     .status-no_channels { background: #fdf3e3; color: #a6650a; }
     .status-queued { background: #eef1f4; color: #606c76; }
+
+    .area-label-input { width: 10rem; }
+    .area-label-status { margin-left: 0.4rem; font-size: 0.85rem; color: #606c76; }
 </style>
 
 <script>
@@ -80,16 +109,147 @@
         queued: 'Queued'
     };
 
-    // Keyed by subscriber id so the trigger table can show a short label
-    // (rather than a bare id) for which area each event belongs to.
-    var subscribersById = {};
+    // Keyed by "<kind>:<id>" (not a bare id) since point and city
+    // subscriptions each have their own id sequence starting at 1 -- a
+    // bare id would collide between the two.
+    var subscriptionsByKey = {};
 
-    function areaLabel(subscriberId) {
-        var sub = subscribersById[subscriberId];
+    function subscriptionKey(kind, id) {
+        return kind + ':' + id;
+    }
+
+    function areaLabel(kind, id) {
+        var sub = subscriptionsByKey[subscriptionKey(kind, id)];
         if (!sub) {
-            return 'Area #' + subscriberId;
+            return (kind === 'city' ? 'City' : 'Area') + ' #' + id;
+        }
+        if (kind === 'city') {
+            return [sub.city_name, sub.admin1_code, sub.country_code].filter(Boolean).join(', ');
         }
         return sub.latitude.toFixed(3) + ', ' + sub.longitude.toFixed(3) + ' (' + sub.radius_miles + ' mi)';
+    }
+
+    // Builds an editable "Label" <td> backed by PATCH /subscribers/{id}/label
+    // or /city-subscribers/{id}/label -- saved on blur/Enter, and skipped
+    // entirely if the value didn't actually change since the last save.
+    function buildLabelCell(kind, sub) {
+        var cell = document.createElement('td');
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.value = sub.contact || '';
+        input.maxLength = 256;
+        input.className = 'area-label-input';
+
+        var status = document.createElement('span');
+        status.className = 'area-label-status';
+        status.dataset.lastSaved = sub.contact || '';
+
+        var save = function () {
+            var label = input.value.trim();
+            if (!label || label === status.dataset.lastSaved) {
+                input.value = status.dataset.lastSaved;
+                return;
+            }
+            status.textContent = 'Saving…';
+            var path = (kind === 'city' ? '/city-subscribers/' : '/subscribers/') + sub.id + '/label';
+            fetch(path, {
+                method: 'PATCH',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label: label })
+            })
+                .then(function (response) {
+                    if (!response.ok) {
+                        return response.json().then(function (body) {
+                            throw new Error(body.detail || ('Request failed: ' + response.status));
+                        });
+                    }
+                    return response.json();
+                })
+                .then(function () {
+                    sub.contact = label;
+                    status.dataset.lastSaved = label;
+                    status.textContent = 'Saved';
+                    setTimeout(function () { status.textContent = ''; }, 1500);
+                })
+                .catch(function (err) {
+                    status.textContent = 'Could not save: ' + err.message;
+                });
+        };
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', function (evt) {
+            if (evt.key === 'Enter') {
+                input.blur();
+            }
+        });
+
+        cell.appendChild(input);
+        cell.appendChild(status);
+        return cell;
+    }
+
+    // Builds an editable "Radius" <td> for a city subscription, backed by
+    // PATCH /city-subscribers/{id}/radius -- an empty value clears it
+    // (reverting to exact nearest-city matching), same save-on-blur/Enter
+    // and skip-if-unchanged behavior as buildLabelCell.
+    function buildCityRadiusCell(sub) {
+        var cell = document.createElement('td');
+
+        var input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.min = '1';
+        input.max = '500';
+        input.placeholder = 'Exact city only';
+        input.value = sub.radius_miles == null ? '' : sub.radius_miles;
+        input.className = 'area-label-input';
+
+        var status = document.createElement('span');
+        status.className = 'area-label-status';
+        status.dataset.lastSaved = sub.radius_miles == null ? '' : String(sub.radius_miles);
+
+        var save = function () {
+            var raw = input.value.trim();
+            if (raw === status.dataset.lastSaved) {
+                return;
+            }
+            var radiusMiles = raw ? parseFloat(raw) : null;
+            status.textContent = 'Saving…';
+            fetch('/city-subscribers/' + sub.id + '/radius', {
+                method: 'PATCH',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ radius_miles: radiusMiles })
+            })
+                .then(function (response) {
+                    if (!response.ok) {
+                        return response.json().then(function (body) {
+                            throw new Error(body.detail || ('Request failed: ' + response.status));
+                        });
+                    }
+                    return response.json();
+                })
+                .then(function () {
+                    sub.radius_miles = radiusMiles;
+                    status.dataset.lastSaved = raw;
+                    status.textContent = 'Saved';
+                    setTimeout(function () { status.textContent = ''; }, 1500);
+                })
+                .catch(function (err) {
+                    status.textContent = 'Could not save: ' + err.message;
+                });
+        };
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', function (evt) {
+            if (evt.key === 'Enter') {
+                input.blur();
+            }
+        });
+
+        cell.appendChild(input);
+        cell.appendChild(status);
+        return cell;
     }
 
     function renderSubscriptions(subs) {
@@ -97,8 +257,7 @@
         var body = document.getElementById('subscriptions-body');
         body.innerHTML = '';
 
-        subscribersById = {};
-        subs.forEach(function (sub) { subscribersById[sub.id] = sub; });
+        subs.forEach(function (sub) { subscriptionsByKey[subscriptionKey('point', sub.id)] = sub; });
 
         if (!subs.length) {
             table.style.display = 'none';
@@ -110,7 +269,9 @@
         subs.forEach(function (sub) {
             var row = document.createElement('tr');
 
-            [sub.contact, sub.latitude, sub.longitude, sub.radius_miles, sub.created_at].forEach(function (value) {
+            row.appendChild(buildLabelCell('point', sub));
+
+            [sub.latitude, sub.longitude, sub.radius_miles, sub.created_at].forEach(function (value) {
                 var cell = document.createElement('td');
                 cell.textContent = value;
                 row.appendChild(cell);
@@ -138,6 +299,59 @@
         });
     }
 
+    function renderCitySubscriptions(subs) {
+        var table = document.getElementById('city-subscriptions-table');
+        var body = document.getElementById('city-subscriptions-body');
+        body.innerHTML = '';
+
+        subs.forEach(function (sub) { subscriptionsByKey[subscriptionKey('city', sub.id)] = sub; });
+
+        if (!subs.length) {
+            table.style.display = 'none';
+            document.getElementById('city-manage-status').textContent = 'No city alerts yet.';
+            return;
+        }
+
+        table.style.display = '';
+        document.getElementById('city-manage-status').textContent = '';
+
+        subs.forEach(function (sub) {
+            var row = document.createElement('tr');
+
+            row.appendChild(buildLabelCell('city', sub));
+
+            var cityCell = document.createElement('td');
+            cityCell.textContent = areaLabel('city', sub.id);
+            row.appendChild(cityCell);
+
+            row.appendChild(buildCityRadiusCell(sub));
+
+            var createdCell = document.createElement('td');
+            createdCell.textContent = sub.created_at;
+            row.appendChild(createdCell);
+
+            var historyCell = document.createElement('td');
+            var historyButton = document.createElement('button');
+            historyButton.textContent = 'History';
+            historyButton.addEventListener('click', function () {
+                loadCitySubscriptionHistory(sub);
+            });
+            historyCell.appendChild(historyButton);
+            row.appendChild(historyCell);
+
+            var actionCell = document.createElement('td');
+            var cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Cancel';
+            cancelButton.addEventListener('click', function () {
+                cancelCitySubscription(sub.id);
+            });
+            actionCell.appendChild(cancelButton);
+            row.appendChild(actionCell);
+
+            body.appendChild(row);
+        });
+    }
+
     function renderEvents(events) {
         var table = document.getElementById('events-table');
         var body = document.getElementById('events-body');
@@ -156,7 +370,7 @@
             var row = document.createElement('tr');
 
             [
-                areaLabel(event.subscriber_id),
+                areaLabel(event.subscription_kind, event.subscriber_id),
                 event.distance_miles,
                 event.detected_at,
             ].forEach(function (value) {
@@ -220,7 +434,7 @@
         var list = document.getElementById('subscription-history-list');
 
         container.style.display = '';
-        title.textContent = 'History near ' + areaLabel(sub.id);
+        title.textContent = 'History near ' + areaLabel('point', sub.id);
         status.textContent = 'Loading…';
         list.innerHTML = '';
 
@@ -250,6 +464,94 @@
             })
             .catch(function (err) {
                 status.textContent = 'Could not load history: ' + err.message;
+            });
+    }
+
+    function loadCitySubscriptions() {
+        var status = document.getElementById('city-manage-status');
+        status.textContent = 'Loading…';
+
+        return fetch('/city-subscribers/mine', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (subs) {
+                status.textContent = '';
+                renderCitySubscriptions(subs);
+            })
+            .catch(function (err) {
+                document.getElementById('city-subscriptions-table').style.display = 'none';
+                status.textContent = 'Could not load city alerts: ' + err.message;
+            });
+    }
+
+    // Backed by /towns/{geoname_id}/history -- the *full* history for this
+    // city (see src/db/city_history.py), not windowed to a recent past like
+    // /subscribers/{id}/history above.
+    function loadCitySubscriptionHistory(sub) {
+        var container = document.getElementById('city-subscription-history');
+        var title = document.getElementById('city-subscription-history-title');
+        var status = document.getElementById('city-subscription-history-status');
+        var list = document.getElementById('city-subscription-history-list');
+
+        container.style.display = '';
+        title.textContent = 'History for ' + areaLabel('city', sub.id);
+        status.textContent = 'Loading…';
+        list.innerHTML = '';
+
+        fetch('/towns/' + sub.geoname_id + '/history', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (rows) {
+                if (!rows.length) {
+                    status.textContent = 'No detections logged for this city yet.';
+                    return;
+                }
+                status.textContent = rows.length + ' detection(s) logged for this city:';
+                rows.forEach(function (row) {
+                    var item = document.createElement('li');
+                    item.textContent = (
+                        row.distance_miles.toFixed(1) + ' mi from center — ' +
+                        (row.confidence || 'unknown') + ' confidence, detected ' + row.detected_at
+                    );
+                    list.appendChild(item);
+                });
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not load history: ' + err.message;
+            });
+    }
+
+    function cancelCitySubscription(id) {
+        var status = document.getElementById('city-manage-status');
+        status.textContent = 'Cancelling…';
+
+        fetch('/city-subscribers/' + id, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                status.textContent = 'Cancelled.';
+                loadCitySubscriptions();
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not cancel that city alert: ' + err.message;
             });
     }
 
@@ -297,17 +599,15 @@
             });
     }
 
-    // Logged-in state comes from the session cookie set by /login. Areas
-    // load first since the trigger table's area labels depend on them.
-    fetch('/me', { credentials: 'same-origin' })
-        .then(function (response) { return response.json(); })
-        .then(function (data) {
-            if (!data.username) {
-                document.getElementById('manage-logged-out').style.display = '';
-                return;
-            }
-            document.getElementById('manage-logged-in').style.display = '';
-            loadSubscriptions().then(loadEvents);
-        });
+    // Logged-in state is already known server-side (see manage_page in
+    // web/app.py) -- no need to round-trip to /me just to ask again. Both
+    // kinds of area load first since the trigger table's area labels
+    // depend on them.
+    if ({{ current_user | tojson }}) {
+        document.getElementById('manage-logged-in').style.display = '';
+        Promise.all([loadSubscriptions(), loadCitySubscriptions()]).then(loadEvents);
+    } else {
+        document.getElementById('manage-logged-out').style.display = '';
+    }
 </script>
 {% endblock %}

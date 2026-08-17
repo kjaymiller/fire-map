@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 import dotenv
 import fastapi
+import psycopg
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -23,8 +24,14 @@ from src.db import (
     DEFAULT_ALERT_RADIUS_MILES,
     HISTORY_AREA_CACHE_KEY_PREFIX,
     HISTORY_AREA_CACHE_TTL_SECONDS,
+    TOWN_HISTORY_CACHE_KEY_PREFIX,
+    TOWN_SEARCH_CACHE_KEY_PREFIX,
+    TOWN_SEARCH_CACHE_TTL_SECONDS,
     cache,
     channels,
+    cities,
+    city_history,
+    city_subscribers,
     notification_log,
     subscribers,
     users,
@@ -51,6 +58,14 @@ async def lifespan(_app: fastapi.FastAPI) -> AsyncIterator[None]:
     subscribers.init_db()
     users.init_db()
     channels.init_db()
+    # Table only -- doesn't load any rows. See the `load-cities` mise task
+    # (src/db/cities.py:load_geonames) for the one-time dataset load.
+    cities.init_db()
+    # Depends on subscribers and cities already existing (FK + the view it
+    # creates joins both) -- must come after both.
+    city_subscribers.init_db()
+    # Depends on cities already existing (FK).
+    city_history.init_db()
     # Depends on subscribers' table already existing (FK) -- must come after.
     notification_log.init_db()
     if cache.get_current() is None:
@@ -317,6 +332,193 @@ def history_area(
     return get_history_in_area(latitude=lat, longitude=lon, radius_miles=radius_miles, limit=limit)
 
 
+@api.get("/towns/nearest")
+def towns_nearest(
+    lat: float = fastapi.Query(..., ge=-90, le=90),
+    lon: float = fastapi.Query(..., ge=-180, le=180),
+) -> dict[str, Any]:
+    """The nearest town/city to a point, from the GeoNames-loaded `cities`
+    table (see src/db/cities.py) -- 404s if nothing's within
+    NEAREST_TOWN_MAX_DISTANCE_MILES (open ocean, remote wilderness, or the
+    dataset hasn't been loaded yet).
+    """
+    town = cities.nearest_city(lat, lon)
+    if town is None:
+        raise fastapi.HTTPException(status_code=404, detail="No town found near that point")
+    return town
+
+
+@api.get("/towns/search")
+def towns_search(
+    q: str = fastapi.Query(..., min_length=1, max_length=100),
+    limit: int = fastapi.Query(10, gt=0, le=50),
+) -> list[dict[str, Any]]:
+    """Cities whose name starts with `q`, largest population first -- backs
+    the city-alert subscribe form's and the map's search boxes (see
+    src/db/cities.py's search_cities).
+
+    Cached in Valkey, keyed on the exact (q, limit) pair -- search-as-you-
+    type means the same prefix gets re-queried constantly, both by the same
+    person (shrinking/growing what they've typed) and across everyone else
+    typing the same common city names, against a table that barely ever
+    changes (see TOWN_SEARCH_CACHE_TTL_SECONDS).
+    """
+    cache_key = f"{TOWN_SEARCH_CACHE_KEY_PREFIX}{q.lower()}:{limit}"
+    cached = cache.get_cached_json(cache_key)
+    if cached is not None:
+        return cached
+
+    results = cities.search_cities(q, limit=limit)
+    cache.set_cached_json(cache_key, results, ttl=TOWN_SEARCH_CACHE_TTL_SECONDS)
+    return results
+
+
+@api.get("/towns/{geoname_id}/history")
+def towns_history(
+    geoname_id: int, limit: int = 500, since: str | None = None
+) -> list[dict[str, Any]]:
+    """The full history of fire detections logged near this city (see
+    src/db/city_history.py) -- every detection that ever resolved to this
+    city as its nearest town, not just ones that happened to trigger an
+    alert for someone. Empty (not 404) once nothing's ever been logged for
+    this geoname_id, whether or not the id itself is real.
+
+    Cached the same way /subscribers/{id}/history is -- a fixed id repeats
+    across page loads (map searches, /manage's city-alert history button),
+    and the underlying table only grows between scheduled reloads, so
+    there's no point re-querying Postgres more often than that.
+    """
+    cache_key = f"{TOWN_HISTORY_CACHE_KEY_PREFIX}{geoname_id}:{limit}:{since or ''}"
+    cached = cache.get_cached_json(cache_key)
+    if cached is not None:
+        return cached
+
+    rows = city_history.get_history(geoname_id, limit=limit, since=since)
+    encoded = jsonable_encoder(rows)
+    cache.set_cached_json(cache_key, encoded, ttl=HISTORY_AREA_CACHE_TTL_SECONDS)
+    return encoded
+
+
+class SubscriptionLabelRequest(BaseModel):
+    label: str = Field(
+        ..., min_length=1, max_length=256, description="New label for this alert area."
+    )
+
+
+class CityRadiusRequest(BaseModel):
+    # None clears it, reverting to exact nearest-city matching -- unlike
+    # SubscriptionLabelRequest.label there's no way to "unset" a point
+    # subscription's radius, but a city one can meaningfully go either way.
+    radius_miles: float | None = Field(
+        None,
+        gt=0,
+        le=500,
+        description="New match radius in miles, or omit/null to revert to exact-city matching.",
+    )
+
+
+class CitySubscriptionRequest(BaseModel):
+    # Same free-text-label convention as SubscriptionRequest.contact below.
+    contact: str | None = Field(
+        None, description="Optional label for this subscription. Defaults to your username."
+    )
+    geoname_id: int = Field(..., description="A geoname_id from /towns/search or /towns/nearest.")
+    # Left unset (the default) to keep the original "exact nearest-city"
+    # match; set it to match by distance from the city's own point instead
+    # -- see city_subscribers.add_subscriber and notify.py.
+    radius_miles: float | None = Field(
+        None,
+        gt=0,
+        le=500,
+        description="Optional match radius (miles) around the city's point. "
+        "Omit to match only detections whose nearest city is this one.",
+    )
+
+
+@api.post("/city-subscribers")
+def create_city_subscriber(
+    payload: CitySubscriptionRequest,
+    username: str = CurrentUser,
+) -> dict[str, Any]:
+    """Subscribe to a whole city for fire alerts. Requires login.
+
+    Every reload, freshly fetched detections whose resolved nearest city
+    (see src/db/cities.py) is this one get queued as a notification, the
+    same as a point + radius subscription but matched by city instead of
+    distance.
+    """
+    try:
+        subscriber_id = city_subscribers.add_subscriber(
+            owner=username,
+            contact=payload.contact or username,
+            geoname_id=payload.geoname_id,
+            radius_miles=payload.radius_miles,
+        )
+    except psycopg.errors.ForeignKeyViolation as exc:
+        # geoname_id doesn't exist in `cities` -- most likely a stale value
+        # from /towns/search, or the dataset hasn't been loaded yet.
+        raise fastapi.HTTPException(status_code=404, detail="No city with that geoname_id") from exc
+    return {"id": subscriber_id}
+
+
+@api.get("/city-subscribers/mine")
+def list_my_city_subscribers(username: str = CurrentUser) -> list[dict[str, Any]]:
+    """List only the city subscriptions you own. Requires login."""
+    return city_subscribers.get_subscribers_by_owner(username)
+
+
+@api.patch("/city-subscribers/{subscriber_id}/label")
+def set_city_subscriber_label(
+    subscriber_id: int,
+    payload: SubscriptionLabelRequest,
+    username: str = CurrentUser,
+) -> dict[str, str]:
+    """Rename a city alert you own. Requires login."""
+    updated = city_subscribers.set_contact(subscriber_id, owner=username, contact=payload.label)
+    if not updated:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="No city subscription with that id owned by this account",
+        )
+    return {"status": "updated", "label": payload.label}
+
+
+@api.patch("/city-subscribers/{subscriber_id}/radius")
+def set_city_subscriber_radius(
+    subscriber_id: int,
+    payload: CityRadiusRequest,
+    username: str = CurrentUser,
+) -> dict[str, Any]:
+    """Set or clear the match radius on a city alert you own. Requires
+    login. Clearing it (radius_miles omitted/null) reverts to matching
+    only detections whose nearest city is this one.
+    """
+    updated = city_subscribers.set_radius(
+        subscriber_id, owner=username, radius_miles=payload.radius_miles
+    )
+    if not updated:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="No city subscription with that id owned by this account",
+        )
+    return {"status": "updated", "radius_miles": payload.radius_miles}
+
+
+@api.delete("/city-subscribers/{subscriber_id}")
+def delete_city_subscriber(
+    subscriber_id: int,
+    username: str = CurrentUser,
+) -> dict[str, str]:
+    """Cancel a city subscription you own. Requires login."""
+    removed = city_subscribers.remove_subscriber(subscriber_id, owner=username)
+    if not removed:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="No city subscription with that id owned by this account",
+        )
+    return {"status": "removed"}
+
+
 def _subscriber_history_cache_key(subscriber_id: int) -> str:
     return f"{HISTORY_AREA_CACHE_KEY_PREFIX}subscriber:{subscriber_id}"
 
@@ -415,6 +617,22 @@ def create_subscriber(
 def list_my_subscribers(username: str = CurrentUser) -> list[dict[str, Any]]:
     """List only the subscriptions you own. Requires login."""
     return subscribers.get_subscribers_by_owner(username)
+
+
+@api.patch("/subscribers/{subscriber_id}/label")
+def set_subscriber_label(
+    subscriber_id: int,
+    payload: SubscriptionLabelRequest,
+    username: str = CurrentUser,
+) -> dict[str, str]:
+    """Rename an alert area you own. Requires login."""
+    updated = subscribers.set_contact(subscriber_id, owner=username, contact=payload.label)
+    if not updated:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="No subscription with that id owned by this account",
+        )
+    return {"status": "updated", "label": payload.label}
 
 
 @api.delete("/subscribers/{subscriber_id}")

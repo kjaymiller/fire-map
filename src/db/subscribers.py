@@ -113,6 +113,23 @@ def get_subscriber(subscriber_id: int, owner: str) -> dict[str, Any] | None:
         return cur.fetchone()
 
 
+def set_contact(subscriber_id: int, owner: str, contact: str) -> bool:
+    """Rename the label on a subscription. Returns False if no matching
+    subscription was owned by `owner` (either it doesn't exist or belongs
+    to someone else).
+    """
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE subscribers SET contact = %(contact)s "
+                "WHERE id = %(id)s AND owner = %(owner)s",
+                {"contact": contact, "id": subscriber_id, "owner": owner},
+            )
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
+
+
 def remove_subscriber(subscriber_id: int, owner: str) -> bool:
     """Cancel a subscription. Returns False if no matching subscription was
     owned by `owner` (either it doesn't exist or belongs to someone else).

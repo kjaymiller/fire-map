@@ -11,9 +11,18 @@ queue_notifications and notifier.py's drain_scan.
 It also doubles as the dedup log: FIRMS' rolling window can return the same
 physical detection (same point, same acquisition time, same satellite --
 see cache.py's event_id) across several consecutive reloads before it ages
-out. `log_queued`'s ON CONFLICT DO NOTHING against (subscriber_id,
-detection_key) means a detection only ever queues a notification once per
-subscriber, no matter how many more times FIRMS keeps handing it back.
+out. `log_queued`'s ON CONFLICT DO NOTHING against (subscription_kind,
+subscriber_id, detection_key) means a detection only ever queues a
+notification once per subscription, no matter how many more times FIRMS
+keeps handing it back.
+
+`subscriber_id` alone isn't a stable reference -- notify.py matches two
+kinds of subscription (point + radius, in subscribers.py, and whole-city,
+in city_subscribers.py) that each have their own id sequence starting at 1,
+so `subscription_kind` disambiguates which table an id came from. That
+also means there's no DB-level FK on subscriber_id here (it can point to
+either table); ownership is instead checked by joining subscriptions_view
+(see city_subscribers.py), which already knows how to route by kind.
 """
 
 import logging
@@ -47,18 +56,29 @@ CREATE INDEX IF NOT EXISTS idx_notification_events_subscriber
 -- unique index below, via its WHERE clause) since there's nothing
 -- meaningful to backfill them with.
 ALTER TABLE notification_events ADD COLUMN IF NOT EXISTS detection_key TEXT NOT NULL DEFAULT '';
+-- Added alongside city subscriptions -- subscriber_id's id sequence is
+-- shared between two different tables now (subscribers, city_subscribers),
+-- so this says which one. Existing rows predate city subscriptions and are
+-- backfilled as 'point'. The FK above only ever pointed at subscribers, so
+-- it's dropped here rather than trying to make it conditional on kind.
+ALTER TABLE notification_events ADD COLUMN IF NOT EXISTS subscription_kind TEXT
+    NOT NULL DEFAULT 'point';
+ALTER TABLE notification_events DROP CONSTRAINT IF EXISTS notification_events_subscriber_id_fkey;
+DROP INDEX IF EXISTS idx_notification_events_dedup;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_events_dedup
-    ON notification_events (subscriber_id, detection_key) WHERE detection_key <> '';
+    ON notification_events (subscription_kind, subscriber_id, detection_key)
+    WHERE detection_key <> '';
 """
 
 INSERT = """
 INSERT INTO notification_events (
-    subscriber_id, scan_id, distance_miles, detected_at, latitude, longitude, detection_key
+    subscriber_id, subscription_kind, scan_id, distance_miles, detected_at,
+    latitude, longitude, detection_key
 ) VALUES (
-    %(subscriber_id)s, %(scan_id)s, %(distance_miles)s, %(detected_at)s,
-    %(latitude)s, %(longitude)s, %(detection_key)s
+    %(subscriber_id)s, %(subscription_kind)s, %(scan_id)s, %(distance_miles)s,
+    %(detected_at)s, %(latitude)s, %(longitude)s, %(detection_key)s
 )
-ON CONFLICT (subscriber_id, detection_key) WHERE detection_key <> '' DO NOTHING
+ON CONFLICT (subscription_kind, subscriber_id, detection_key) WHERE detection_key <> '' DO NOTHING
 RETURNING id;
 """
 
@@ -76,16 +96,16 @@ def init_db() -> None:
 
 def log_queued(scan_id: uuid.UUID | str, matches: list[dict[str, Any]]) -> list[int | None]:
     """Record one row per queued match, in the same order as `matches` --
-    except a match whose (subscriber_id, detection_key) has already been
-    logged before (any prior scan, not just this one), which logs nothing
-    and comes back as None in that position instead.
+    except a match whose (subscription_kind, subscriber_id, detection_key)
+    has already been logged before (any prior scan, not just this one),
+    which logs nothing and comes back as None in that position instead.
 
-    Each match needs subscriber_id, distance_miles, detected_at, latitude,
-    longitude, detection_key. The caller drops any None-paired match
-    entirely rather than queuing it to Valkey -- that's the actual dedup
-    enforcement point, this just detects it. Non-None ids get stitched back
-    into their Valkey payload (as `event_id`) so the notifier can update
-    the right row later.
+    Each match needs subscription_kind, subscriber_id, distance_miles,
+    detected_at, latitude, longitude, detection_key. The caller drops any
+    None-paired match entirely rather than queuing it to Valkey -- that's
+    the actual dedup enforcement point, this just detects it. Non-None ids
+    get stitched back into their Valkey payload (as `event_id`) so the
+    notifier can update the right row later.
     """
     if not matches:
         return []
@@ -93,6 +113,7 @@ def log_queued(scan_id: uuid.UUID | str, matches: list[dict[str, Any]]) -> list[
     rows = [
         {
             "subscriber_id": match["subscriber_id"],
+            "subscription_kind": match["subscription_kind"],
             "scan_id": str(scan_id),
             "distance_miles": match["distance_miles"],
             "detected_at": match["detected_at"],
@@ -168,18 +189,24 @@ def mark_no_channels(event_ids: list[int]) -> None:
 
 
 def get_events_by_owner(owner: str, limit: int = 200) -> list[dict[str, Any]]:
-    """List recent trigger events for every subscription `owner` has,
-    newest first -- the history behind /manage's "how have my areas
-    triggered" view.
+    """List recent trigger events for every subscription `owner` has --
+    point or city alike -- newest first. The history behind /manage's "how
+    have my areas triggered" view.
+
+    Joined against subscriptions_view (see city_subscribers.py) rather than
+    subscribers directly, since subscriber_id's id sequence is shared
+    between two tables now -- the join has to match on (kind, id) together,
+    which subscriptions_view already knows how to do.
     """
     with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT ne.id, ne.subscriber_id, ne.scan_id, ne.distance_miles, "
-            "ne.detected_at, ne.latitude, ne.longitude, ne.status, "
+            "SELECT ne.id, ne.subscriber_id, ne.subscription_kind, ne.scan_id, "
+            "ne.distance_miles, ne.detected_at, ne.latitude, ne.longitude, ne.status, "
             "ne.channels_delivered, ne.created_at "
             "FROM notification_events ne "
-            "JOIN subscribers s ON s.id = ne.subscriber_id "
-            "WHERE s.owner = %(owner)s "
+            "JOIN subscriptions_view sv "
+            "ON sv.kind = ne.subscription_kind AND sv.id = ne.subscriber_id "
+            "WHERE sv.owner = %(owner)s "
             "ORDER BY ne.created_at DESC "
             "LIMIT %(limit)s",
             {"owner": owner, "limit": limit},

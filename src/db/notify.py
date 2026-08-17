@@ -18,6 +18,12 @@ also what dedup checks against: FIRMS' rolling window can keep handing back
 the same physical detection across several consecutive reloads before it
 ages out, and a subscriber should hear about it once, not once per reload
 it happens to still be in that window.
+
+Two kinds of subscription are matched here: point + radius (subscribers.py)
+and whole-city (city_subscribers.py) -- see queue_notifications for how each
+is matched, and notification_log's `subscription_kind` column for how the
+two are told apart downstream (their ids come from separate tables, so
+`subscriber_id` alone doesn't disambiguate).
 """
 
 import json
@@ -30,8 +36,16 @@ from typing import Any, cast
 import valkey.exceptions
 from geojson import Feature
 
-from . import NOTIFY_KEY_PREFIX, NOTIFY_SCAN_QUEUE_KEY, notification_log, subscribers
+from . import (
+    NOTIFY_KEY_PREFIX,
+    NOTIFY_SCAN_QUEUE_KEY,
+    city_history,
+    city_subscribers,
+    notification_log,
+    subscribers,
+)
 from .cache import event_id, get_client
+from .cities import nearest_city
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +70,9 @@ def queue_notifications(
     radius. Returns the number queued.
     """
     features = list(features)
-    subs = subscribers.get_subscribers()
-    if not subs:
+    point_subs = subscribers.get_subscribers()
+    city_subs = city_subscribers.get_subscribers()
+    if not point_subs and not city_subs:
         logger.info(f"No subscribers registered, nothing to match for scan {scan_id}")
         return 0
 
@@ -69,13 +84,38 @@ def queue_notifications(
         # once per feature (not per subscriber match) since it only
         # depends on the detection itself.
         detection_key = event_id(feature)
-        for sub in subs:
+
+        # Resolved once per detection regardless of whether it matches any
+        # subscriber -- unlike the old subscriber-gated lookup this
+        # replaced, city_fire_history is meant to be a *full* history of
+        # what's landed near a city, not just what happened to trigger an
+        # alert for someone.
+        town: dict[str, Any] | None = None
+        try:
+            town = nearest_city(lat, lon)
+        except Exception:
+            # cities table might not exist/be loaded yet -- a missing town
+            # label shouldn't stop the alert itself.
+            logger.exception(f"Nearest-city lookup failed for {lat}, {lon}")
+
+        if town is not None:
+            try:
+                city_history.record_detection(
+                    town, feature, scan_id, town["distance_miles"], detection_key
+                )
+            except Exception:
+                logger.exception(
+                    f"Failed to record detection near {town['name']!r} in city history"
+                )
+
+        for sub in point_subs:
             distance = distance_miles(lat, lon, sub["latitude"], sub["longitude"])
             if distance > sub["radius_miles"]:
                 continue
 
             matches.append(
                 {
+                    "subscription_kind": "point",
                     "subscriber_id": sub["id"],
                     "owner": sub["owner"],
                     "contact": sub["contact"],
@@ -85,6 +125,7 @@ def queue_notifications(
                     "longitude": lon,
                     "feature": feature,
                     "detection_key": detection_key,
+                    "town": town,
                     # The alert area's own center/radius -- included so a
                     # batched message covering several of an owner's areas
                     # (see notifier.py:build_batch_message) can label which
@@ -95,19 +136,52 @@ def queue_notifications(
                 }
             )
 
+        # A city subscription with no radius_miles set matches only the
+        # exact nearest-city case (same as what /towns/{geoname_id}/history
+        # shows); one with a radius matches by distance from the city's own
+        # point instead, same as a point subscription, so it isn't limited
+        # to detections whose nearest city happens to resolve to this one.
+        for sub in city_subs:
+            if sub["radius_miles"] is not None:
+                distance = distance_miles(lat, lon, sub["latitude"], sub["longitude"])
+                if distance > sub["radius_miles"]:
+                    continue
+            else:
+                if town is None or sub["geoname_id"] != town["geoname_id"]:
+                    continue
+                distance = town["distance_miles"]
+
+            matches.append(
+                {
+                    "subscription_kind": "city",
+                    "subscriber_id": sub["id"],
+                    "owner": sub["owner"],
+                    "contact": sub["contact"],
+                    "distance_miles": round(distance, 1),
+                    "detected_at": feature["properties"]["datetime"],
+                    "latitude": lat,
+                    "longitude": lon,
+                    "feature": feature,
+                    "detection_key": detection_key,
+                    "town": town,
+                }
+            )
+
     if not matches:
         logger.info(
             f"No subscriber matches for scan {scan_id} "
-            f"({len(features)} detection(s), {len(subs)} subscriber(s))"
+            f"({len(features)} detection(s), {len(point_subs)} point + "
+            f"{len(city_subs)} city subscriber(s))"
         )
         return 0
 
     # Durably logged before the ephemeral Valkey queue -- each row_id rides
     # along in its match's payload (as event_id) so the notifier can update
     # this same row once it knows whether the send actually went out. A
-    # match whose (subscriber_id, detection_key) was already logged in some
-    # earlier scan comes back None here -- that's the dedup check, and it's
-    # dropped entirely rather than queued again (see log_queued).
+    # match whose (subscription_kind, subscriber_id, detection_key) was
+    # already logged in some earlier scan comes back None here -- that's
+    # the dedup check, and it's dropped entirely rather than queued again
+    # (see log_queued).
     row_ids = notification_log.log_queued(scan_id, matches)
     skipped = sum(1 for row_id in row_ids if row_id is None)
 
@@ -116,7 +190,8 @@ def queue_notifications(
         if row_id is None:
             continue
         field = (
-            f"notification:{match['subscriber_id']}:{match['detected_at']}"
+            f"notification:{match['subscription_kind']}:{match['subscriber_id']}"
+            f":{match['detected_at']}"
             f":{match['latitude']:.4f}:{match['longitude']:.4f}"
         )
         pending[field] = json.dumps({**match, "event_id": row_id})
