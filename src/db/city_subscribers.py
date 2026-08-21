@@ -132,11 +132,17 @@ def get_subscribers() -> list[dict[str, Any]]:
 
     The join (rather than a bare `SELECT *`) is what lets notify.py match
     a radius-based city subscription by distance from `latitude`/
-    `longitude` without a second lookup per subscriber.
+    `longitude` without a second lookup per subscriber -- and lets it label
+    a match with the *subscribed* city's own name (city_name/admin1_code/
+    country_code) rather than whatever a detection's own nearest-city
+    lookup happens to resolve to, which can disagree with it once a radius
+    is set (see notify.py's queue_notifications and notifier.py's
+    area_header).
     """
     with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT cs.*, c.latitude, c.longitude, c.name AS city_name "
+            "SELECT cs.*, c.latitude, c.longitude, c.name AS city_name, "
+            "c.admin1_code AS city_admin1_code, c.country_code AS city_country_code "
             "FROM city_subscribers cs JOIN cities c ON c.geoname_id = cs.geoname_id"
         )
         return cur.fetchall()

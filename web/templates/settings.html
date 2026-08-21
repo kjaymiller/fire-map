@@ -1,23 +1,99 @@
 {% extends 'base.html' %}
 
-{% block content %}
-<div id="manage-section">
-    <h2>Notification manager</h2>
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% endblock %}
 
-    <div id="manage-logged-out" style="display: none">
-        <p><a href="/login">Log in</a> to view your alert areas and how they've triggered.</p>
+{% block content %}
+<div id="settings-section">
+    <h2>Manage alerts</h2>
+
+    <div id="settings-logged-out" style="display: none">
+        <p>
+            An alert has two independent parts, both set up here once you've
+            got an account:
+        </p>
+        <ul>
+            <li>
+                <strong>A channel</strong> &mdash; the email address or
+                Discord webhook alerts actually get delivered to. Add one
+                first; without it, nothing has anywhere to go.
+            </li>
+            <li>
+                <strong>An alert area</strong> &mdash; where to watch. Either
+                a point + radius (drawn from <a href="/notify">the form</a>
+                or by clicking the map), or a whole city, chosen by name.
+                Point areas can auto-expire once the spot stops producing
+                detections, or stay durable until you cancel them; city
+                alerts always stay until cancelled.
+            </li>
+        </ul>
+        <p>
+            Every channel you register gets every alert from every area you
+            set up &mdash; there's no per-area routing. Once both exist,
+            each scheduled reload checks fresh detections against your
+            areas and sends anything that matches.
+        </p>
+        <p>
+            <a href="/login">Log in</a> or <a href="/register">create an account</a>
+            to set these up.
+        </p>
     </div>
 
-    <div id="manage-logged-in" style="display: none">
+    <div id="settings-logged-in" style="display: none">
+        <h3>Notification channels</h3>
+        <p>
+            Register the email address or Discord webhook your alerts
+            actually get delivered to. This is separate from
+            <a href="/notify">your alert areas</a> (and the map's
+            click-to-subscribe popups) &mdash; those just say <em>where</em>
+            to watch; the channels here say <em>how</em> to reach you. Every
+            channel you add gets every alert from every one of your alert
+            areas and city alerts below.
+        </p>
+
+        <form id="channel-form">
+            <fieldset>
+                <label for="channel-type">Channel</label>
+                <select id="channel-type" name="channel_type" required>
+                    <option value="email">Email</option>
+                    <option value="discord">Discord</option>
+                </select>
+
+                <label for="channel-address" id="channel-address-label">Address</label>
+                <input type="text" id="channel-address" name="address" placeholder="you@example.com" required>
+                <small id="channel-address-hint"></small>
+
+                <input type="submit" value="Add channel">
+            </fieldset>
+        </form>
+        <p id="channel-status" aria-live="polite"></p>
+
+        <div style="overflow-x: auto">
+        <table id="channels-table" style="display: none">
+            <thead>
+                <tr>
+                    <th>Channel</th>
+                    <th>Address</th>
+                    <th>Added</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="channels-body"></tbody>
+        </table>
+        </div>
+
         <h3>Your alert areas</h3>
-        <p id="manage-status"></p>
+        <p id="manage-status" aria-live="polite"></p>
+        <div style="overflow-x: auto">
         <table id="subscriptions-table" style="display: none">
             <thead>
                 <tr>
                     <th>Label</th>
-                    <th>Latitude</th>
-                    <th>Longitude</th>
+                    <th>Location</th>
                     <th>Radius (mi)</th>
+                    <th title="Auto-expires: removed automatically once no active fire remains within radius. Durable: stays until you cancel it.">Type</th>
                     <th>Created</th>
                     <th></th>
                     <th></th>
@@ -25,14 +101,20 @@
             </thead>
             <tbody id="subscriptions-body"></tbody>
         </table>
+        </div>
         <div id="subscription-history" style="display: none">
             <h4 id="subscription-history-title"></h4>
-            <p id="subscription-history-status"></p>
+            <p>
+                Recent detections found within this area &mdash; a cached,
+                recent window, not the full history.
+            </p>
+            <p id="subscription-history-status" aria-live="polite"></p>
             <ul id="subscription-history-list"></ul>
         </div>
 
         <h3>Your city alerts</h3>
-        <p id="city-manage-status"></p>
+        <p id="city-manage-status" aria-live="polite"></p>
+        <div style="overflow-x: auto">
         <table id="city-subscriptions-table" style="display: none">
             <thead>
                 <tr>
@@ -46,6 +128,7 @@
             </thead>
             <tbody id="city-subscriptions-body"></tbody>
         </table>
+        </div>
         <div id="city-subscription-history" style="display: none">
             <h4 id="city-subscription-history-title"></h4>
             <p>
@@ -53,7 +136,7 @@
                 shows up here &mdash; the full history, not just the ones
                 that triggered an alert for you.
             </p>
-            <p id="city-subscription-history-status"></p>
+            <p id="city-subscription-history-status" aria-live="polite"></p>
             <ul id="city-subscription-history-list"></ul>
         </div>
 
@@ -61,13 +144,14 @@
         <p>
             Every time a reload finds a detection inside one of your areas, it
             shows up here &mdash; whether or not it actually reached you.
-            <em>Delivered</em> means at least one of your
-            <a href="/manage-notifications">notification channels</a> got it;
-            <em>failed</em> means a channel was registered but the send
-            didn't go through; <em>no channels</em> means the alert had
-            nowhere to go because none were registered yet at the time.
+            <em>Delivered</em> means at least one of your notification
+            channels above got it; <em>failed</em> means a channel was
+            registered but the send didn't go through; <em>no channels</em>
+            means the alert had nowhere to go because none were registered
+            yet at the time.
         </p>
-        <p id="events-status"></p>
+        <p id="events-status" aria-live="polite"></p>
+        <div style="overflow-x: auto">
         <table id="events-table" style="display: none">
             <thead>
                 <tr>
@@ -81,6 +165,7 @@
             </thead>
             <tbody id="events-body"></tbody>
         </table>
+        </div>
     </div>
 </div>
 
@@ -99,6 +184,54 @@
 
     .area-label-input { width: 10rem; }
     .area-label-status { margin-left: 0.4rem; font-size: 0.85rem; color: #606c76; }
+
+    .area-tooltip-anchor {
+        border-bottom: 1px dotted #606c76;
+        cursor: help;
+    }
+
+    .area-tooltip {
+        /* visibility (not display: none) so the box always has real
+           layout dimensions -- Leaflet reads its container's size at
+           creation time, and an element hidden via `display: none`
+           reports a size of 0x0, which leaves the map permanently
+           mispositioned even after later showing it. Kept off-screen via
+           position instead, until showAreaTooltip moves it into view. */
+        visibility: hidden;
+        position: absolute;
+        top: -9999px;
+        left: -9999px;
+        z-index: 1000;
+        width: 240px;
+        background: #fff;
+        border: 1px solid #d1d1d1;
+        border-radius: 0.3rem;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+        overflow: hidden;
+    }
+
+    .area-tooltip-map {
+        width: 100%;
+        height: 150px;
+    }
+
+    .area-tooltip-details {
+        padding: 0.5rem 0.7rem;
+        font-size: 0.95rem;
+        line-height: 1.4;
+    }
+
+    /* Always-visible per-row mini map in "Your alert areas" -- unlike
+       area-tooltip-map above (one shared map, shown on hover), each row
+       gets its own small Leaflet instance so every alert area's location
+       is visible at a glance without hovering. Fixed size for the same
+       reason area-tooltip-map is: Leaflet reads the container's size at
+       creation time. */
+    .row-mini-map {
+        width: 140px;
+        height: 90px;
+        border-radius: 0.3rem;
+    }
 </style>
 
 <script>
@@ -108,6 +241,159 @@
         no_channels: 'No channels',
         queued: 'Queued'
     };
+
+    // --- Notification channels (email/Discord delivery addresses) ---
+
+    var CHANNEL_LABELS = {
+        email: 'Email',
+        discord: 'Discord'
+    };
+
+    // Discord's address is the full webhook URL you get from Discord
+    // itself, not a handle -- swap the placeholder/hint so that's clear
+    // without having to guess from the generic "Address" label.
+    var ADDRESS_HINTS = {
+        email: { placeholder: 'you@example.com', hint: '' },
+        discord: {
+            placeholder: 'https://discord.com/api/webhooks/…',
+            hint: 'The webhook URL from Discord’s channel settings → Integrations → Webhooks.'
+        }
+    };
+
+    function updateAddressField() {
+        var type = document.getElementById('channel-type').value;
+        var config = ADDRESS_HINTS[type];
+        var addressInput = document.getElementById('channel-address');
+        // Real browser email validation (format check + the right mobile
+        // keyboard) for the one channel type where "address" actually means
+        // an email address -- Discord's is a webhook URL, so it stays plain
+        // text.
+        addressInput.type = type === 'email' ? 'email' : 'text';
+        addressInput.placeholder = config.placeholder;
+        document.getElementById('channel-address-hint').textContent = config.hint;
+    }
+
+    function renderChannels(items) {
+        var table = document.getElementById('channels-table');
+        var body = document.getElementById('channels-body');
+        body.innerHTML = '';
+
+        if (!items.length) {
+            table.style.display = 'none';
+            document.getElementById('channel-status').textContent = 'No notification channels yet.';
+            return;
+        }
+
+        table.style.display = '';
+        document.getElementById('channel-status').textContent = '';
+
+        items.forEach(function (item) {
+            var row = document.createElement('tr');
+
+            [CHANNEL_LABELS[item.channel_type] || item.channel_type, item.address, item.created_at].forEach(function (value) {
+                var cell = document.createElement('td');
+                cell.textContent = value;
+                row.appendChild(cell);
+            });
+
+            var actionCell = document.createElement('td');
+            var removeButton = document.createElement('button');
+            removeButton.textContent = 'Remove';
+            removeButton.addEventListener('click', function () {
+                removeChannel(item.id);
+            });
+            actionCell.appendChild(removeButton);
+            row.appendChild(actionCell);
+
+            body.appendChild(row);
+        });
+    }
+
+    function loadChannels() {
+        var status = document.getElementById('channel-status');
+        status.textContent = 'Loading…';
+
+        return fetch('/channels/mine', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function (items) {
+                renderChannels(items);
+            })
+            .catch(function (err) {
+                document.getElementById('channels-table').style.display = 'none';
+                status.textContent = 'Could not load channels: ' + err.message;
+            });
+    }
+
+    function removeChannel(id) {
+        if (!window.confirm('Remove this notification channel? Alerts will stop reaching it.')) {
+            return;
+        }
+        var status = document.getElementById('channel-status');
+        status.textContent = 'Removing…';
+
+        fetch('/channels/' + id, {
+            method: 'DELETE',
+            credentials: 'same-origin'
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                loadChannels();
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not remove that channel: ' + err.message;
+            });
+    }
+
+    document.getElementById('channel-type').addEventListener('change', updateAddressField);
+
+    document.getElementById('channel-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+
+        var form = event.target;
+        var status = document.getElementById('channel-status');
+        var payload = {
+            channel_type: form.channel_type.value,
+            address: form.address.value
+        };
+
+        status.textContent = 'Saving…';
+
+        fetch('/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload)
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                    });
+                }
+                return response.json();
+            })
+            .then(function () {
+                form.reset();
+                updateAddressField();
+                loadChannels();
+            })
+            .catch(function (err) {
+                status.textContent = 'Could not add that channel: ' + err.message;
+            });
+    });
+
+    // --- Alert areas, city alerts, and trigger history ---
 
     // Keyed by "<kind>:<id>" (not a bare id) since point and city
     // subscriptions each have their own id sequence starting at 1 -- a
@@ -252,6 +538,58 @@
         return cell;
     }
 
+    // Builds the "Location" <td> for one alert-area row: a small
+    // non-interactive Leaflet map centered on the area with its radius
+    // circle drawn, instead of printing raw latitude/longitude/radius
+    // numbers. The map instance isn't created here -- Leaflet reads its
+    // container's size at creation time, and the <td> has no real size
+    // until the row is actually in the DOM -- see initRowMiniMap, called
+    // right after the row is appended.
+    function buildLocationCell(sub) {
+        var cell = document.createElement('td');
+        var mapDiv = document.createElement('div');
+        mapDiv.className = 'row-mini-map';
+        cell.appendChild(mapDiv);
+        return cell;
+    }
+
+    function initRowMiniMap(mapDiv, sub) {
+        var map = L.map(mapDiv, {
+            zoomControl: false,
+            attributionControl: false,
+            dragging: false,
+            scrollWheelZoom: false,
+            doubleClickZoom: false,
+            boxZoom: false,
+            keyboard: false,
+            tap: false
+        });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18
+        }).addTo(map);
+
+        var center = [sub.latitude, sub.longitude];
+        // Leaflet needs a view (center/zoom) set before any layer is added,
+        // or the map has no projection origin yet and later calls like
+        // circle.getBounds() blow up reading layerPointToLatLng off an
+        // unset map. fitBounds below re-adjusts this once the circle exists.
+        map.setView(center, 12);
+        L.marker(center).addTo(map);
+
+        if (sub.radius_miles) {
+            var circle = L.circle(center, {
+                radius: sub.radius_miles * 1609.34, // miles -> meters
+                color: '#9b4dca',
+                weight: 2,
+                fillColor: '#9b4dca',
+                fillOpacity: 0.08
+            }).addTo(map);
+            map.fitBounds(circle.getBounds(), { padding: [4, 4] });
+        } else {
+            map.setView(center, 12);
+        }
+    }
+
     function renderSubscriptions(subs) {
         var table = document.getElementById('subscriptions-table');
         var body = document.getElementById('subscriptions-body');
@@ -271,11 +609,25 @@
 
             row.appendChild(buildLabelCell('point', sub));
 
-            [sub.latitude, sub.longitude, sub.radius_miles, sub.created_at].forEach(function (value) {
-                var cell = document.createElement('td');
-                cell.textContent = value;
-                row.appendChild(cell);
-            });
+            var locationCell = buildLocationCell(sub);
+            row.appendChild(locationCell);
+
+            var radiusCell = document.createElement('td');
+            radiusCell.textContent = sub.radius_miles;
+            row.appendChild(radiusCell);
+
+            var typeCell = document.createElement('td');
+            // Ephemeral areas (created from the map's "notify me about
+            // this area" option) disappear on their own once no active
+            // detection remains within radius_miles -- see
+            // subscribers.expire_ephemeral -- so this row may vanish
+            // between page loads with no cancel action taken.
+            typeCell.textContent = sub.ephemeral ? 'Auto-expires' : 'Durable';
+            row.appendChild(typeCell);
+
+            var createdCell = document.createElement('td');
+            createdCell.textContent = sub.created_at;
+            row.appendChild(createdCell);
 
             var historyCell = document.createElement('td');
             var historyButton = document.createElement('button');
@@ -296,6 +648,7 @@
             row.appendChild(actionCell);
 
             body.appendChild(row);
+            initRowMiniMap(locationCell.querySelector('.row-mini-map'), sub);
         });
     }
 
@@ -352,6 +705,150 @@
         });
     }
 
+    // --- Area label hover: a mini map + the full alert-area details,
+    // instead of cramming them into the trigger table's Area column. One
+    // tooltip element and one Leaflet map are created lazily and reused
+    // across every row/hover -- a fresh map per row would be needless
+    // overhead for something shown one at a time.
+    var areaTooltip = null;
+    var areaTooltipMap = null;
+    var areaTooltipMarker = null;
+    var areaTooltipCircle = null;
+
+    function ensureAreaTooltip() {
+        if (areaTooltip) {
+            return areaTooltip;
+        }
+        areaTooltip = document.createElement('div');
+        areaTooltip.className = 'area-tooltip';
+        areaTooltip.innerHTML =
+            '<div class="area-tooltip-map"></div>' +
+            '<div class="area-tooltip-details"></div>';
+        document.body.appendChild(areaTooltip);
+
+        areaTooltipMap = L.map(areaTooltip.querySelector('.area-tooltip-map'), {
+            zoomControl: false,
+            attributionControl: false,
+            dragging: false,
+            scrollWheelZoom: false,
+            doubleClickZoom: false,
+            boxZoom: false,
+            keyboard: false,
+            tap: false
+        });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18
+        }).addTo(areaTooltipMap);
+
+        return areaTooltip;
+    }
+
+    // The label itself is already the visible anchor text (see
+    // buildAreaCell) -- this fills in what it actually refers to.
+    function areaTooltipDetails(kind, sub) {
+        if (kind === 'city') {
+            var cityParts = [sub.city_name, sub.admin1_code, sub.country_code].filter(Boolean);
+            return (
+                '<strong>' + cityParts.join(', ') + '</strong><br>' +
+                (sub.radius_miles != null
+                    ? sub.radius_miles + ' mi match radius'
+                    : 'Exact nearest-city match') + '<br>' +
+                'Subscribed ' + sub.created_at
+            );
+        }
+        return (
+            '<strong>' + sub.latitude.toFixed(4) + ', ' + sub.longitude.toFixed(4) + '</strong><br>' +
+            sub.radius_miles + ' mi radius &mdash; ' + (sub.ephemeral ? 'auto-expires' : 'durable') + '<br>' +
+            'Subscribed ' + sub.created_at
+        );
+    }
+
+    function showAreaTooltip(anchor, kind, sub) {
+        var tooltip = ensureAreaTooltip();
+        tooltip.querySelector('.area-tooltip-details').innerHTML = areaTooltipDetails(kind, sub);
+        tooltip.style.visibility = 'visible';
+
+        // Clamp horizontally so a row near the right edge doesn't push the
+        // tooltip off-screen; anchored below the label otherwise.
+        var rect = anchor.getBoundingClientRect();
+        var left = Math.min(
+            window.scrollX + rect.left,
+            window.scrollX + document.documentElement.clientWidth - tooltip.offsetWidth - 12
+        );
+        tooltip.style.top = (window.scrollY + rect.bottom + 6) + 'px';
+        tooltip.style.left = Math.max(12, left) + 'px';
+
+        var center = [sub.latitude, sub.longitude];
+        areaTooltipMap.invalidateSize();
+        // Same reason as initRowMiniMap: the map needs a view established
+        // before layers are (re-)added, or getBounds() on the circle below
+        // fails reading layerPointToLatLng off an unset map. Harmless once
+        // a view already exists -- fitBounds/setView below take over.
+        areaTooltipMap.setView(center, 12);
+
+        if (areaTooltipMarker) {
+            areaTooltipMap.removeLayer(areaTooltipMarker);
+        }
+        areaTooltipMarker = L.marker(center).addTo(areaTooltipMap);
+
+        if (areaTooltipCircle) {
+            areaTooltipMap.removeLayer(areaTooltipCircle);
+            areaTooltipCircle = null;
+        }
+
+        if (sub.radius_miles) {
+            areaTooltipCircle = L.circle(center, {
+                radius: sub.radius_miles * 1609.34, // miles -> meters
+                color: '#9b4dca',
+                weight: 2,
+                fillColor: '#9b4dca',
+                fillOpacity: 0.08
+            }).addTo(areaTooltipMap);
+            areaTooltipMap.fitBounds(areaTooltipCircle.getBounds(), { padding: [12, 12] });
+        } else {
+            areaTooltipMap.setView(center, 12);
+        }
+    }
+
+    function hideAreaTooltip() {
+        if (areaTooltip) {
+            areaTooltip.style.visibility = 'hidden';
+        }
+    }
+
+    // Builds the "Label" <td> for one trigger row -- the alert area's own
+    // label (its contact/name, editable up in "Your alert areas"/"Your
+    // city alerts" above) rather than its coordinates or city name, since
+    // that's what an owner with several areas actually recognizes at a
+    // glance. Falls back to areaLabel() (a plain, non-hoverable "coords/
+    // city" string) if the area it refers to can't be found -- deleted
+    // since, or an ephemeral area that's already expired (see
+    // subscribers.expire_ephemeral) -- since there's no label to show or
+    // location to put on a map at that point. Otherwise the label is
+    // hoverable, wired to showAreaTooltip/hideAreaTooltip, which reveals
+    // the mini map + full area details (coordinates/city, radius, type).
+    function buildAreaCell(kind, id) {
+        var cell = document.createElement('td');
+        var sub = subscriptionsByKey[subscriptionKey(kind, id)];
+
+        if (!sub) {
+            cell.textContent = areaLabel(kind, id);
+            return cell;
+        }
+
+        var link = document.createElement('span');
+        link.className = 'area-tooltip-anchor';
+        link.tabIndex = 0;
+        link.textContent = sub.contact || areaLabel(kind, id);
+        link.addEventListener('mouseenter', function () { showAreaTooltip(link, kind, sub); });
+        link.addEventListener('mouseleave', hideAreaTooltip);
+        link.addEventListener('focus', function () { showAreaTooltip(link, kind, sub); });
+        link.addEventListener('blur', hideAreaTooltip);
+
+        cell.appendChild(link);
+        return cell;
+    }
+
     function renderEvents(events) {
         var table = document.getElementById('events-table');
         var body = document.getElementById('events-body');
@@ -369,11 +866,9 @@
         events.forEach(function (event) {
             var row = document.createElement('tr');
 
-            [
-                areaLabel(event.subscription_kind, event.subscriber_id),
-                event.distance_miles,
-                event.detected_at,
-            ].forEach(function (value) {
+            row.appendChild(buildAreaCell(event.subscription_kind, event.subscriber_id));
+
+            [event.distance_miles, event.detected_at].forEach(function (value) {
                 var cell = document.createElement('td');
                 cell.textContent = value;
                 row.appendChild(cell);
@@ -534,6 +1029,9 @@
     }
 
     function cancelCitySubscription(id) {
+        if (!window.confirm('Cancel this city alert? This cannot be undone.')) {
+            return;
+        }
         var status = document.getElementById('city-manage-status');
         status.textContent = 'Cancelling…';
 
@@ -578,6 +1076,9 @@
     }
 
     function cancelSubscription(id) {
+        if (!window.confirm('Cancel this alert area? This cannot be undone.')) {
+            return;
+        }
         var status = document.getElementById('manage-status');
         status.textContent = 'Cancelling…';
 
@@ -595,19 +1096,21 @@
                 loadSubscriptions();
             })
             .catch(function (err) {
-                status.textContent = 'Could not cancel that subscription: ' + err.message;
+                status.textContent = 'Could not cancel that alert area: ' + err.message;
             });
     }
 
-    // Logged-in state is already known server-side (see manage_page in
-    // web/app.py) -- no need to round-trip to /me just to ask again. Both
-    // kinds of area load first since the trigger table's area labels
-    // depend on them.
+    // Logged-in state is already known server-side (see settings_page in
+    // web/app.py) -- no need to round-trip to /me just to ask again.
+    // Channels load alongside both kinds of area; the trigger table's area
+    // labels depend on the areas, so events wait on those specifically.
     if ({{ current_user | tojson }}) {
-        document.getElementById('manage-logged-in').style.display = '';
+        document.getElementById('settings-logged-in').style.display = '';
+        updateAddressField();
+        loadChannels();
         Promise.all([loadSubscriptions(), loadCitySubscriptions()]).then(loadEvents);
     } else {
-        document.getElementById('manage-logged-out').style.display = '';
+        document.getElementById('settings-logged-out').style.display = '';
     }
 </script>
 {% endblock %}

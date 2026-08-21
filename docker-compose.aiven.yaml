@@ -1,0 +1,62 @@
+services:
+  # Databases + otel collector only -- no app services here. Aiven's
+  # compose-based deploy doesn't support the `healthcheck` key, so this
+  # file drops every healthcheck (and the service_healthy depends_on
+  # conditions that relied on them) rather than have the deploy reject
+  # docker-compose.yaml outright. web/scheduler/notifier are deployed as
+  # their own Aiven services and just need these env vars pointed at
+  # wherever Aiven places these containers.
+  postgres:
+    # PostGIS on top of the same postgres:16 base -- the area-history query
+    # (src/db/postgres.py's get_history_in_area) needs ST_DWithin over a
+    # geography column, which plain postgres doesn't have.
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-firemap}
+      POSTGRES_USER: ${POSTGRES_USER:-firemap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-firemap}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  valkey:
+    # MSETEX and HGETDEL (src/db/cache.py, src/db/notify.py) need Valkey 9.1+.
+    image: valkey/valkey:9.1-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  otel-collector:
+    # Sits between the app and wherever telemetry lands (see
+    # otel-collector-config.yaml) -- traces on to Jaeger, logs to stdout
+    # for now. The app always points OTEL_EXPORTER_OTLP_ENDPOINT here, so
+    # swapping backends later is a config-file change, not an app change.
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      - jaeger
+    ports:
+      - "4318:4318" # OTLP/HTTP receiver
+      - "4317:4317" # OTLP/gRPC receiver
+
+  jaeger:
+    # All-in-one Jaeger: in-memory storage, OTLP ingestion, and the trace
+    # viewer UI, all in one container. Traces don't survive a restart
+    # (in-memory only) -- swap for a durable backend when you're ready.
+    #
+    # Not exposed to the host directly -- the otel-collector above is the
+    # only thing that talks to it, forwarding on the traces it receives.
+    image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # trace viewer UI
+
+volumes:
+  postgres_data:

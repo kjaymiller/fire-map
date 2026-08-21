@@ -5,9 +5,9 @@
     <h2>Get notified</h2>
     <p>
         Register a point and a radius to queue alerts for fire detections
-        within that distance. Alerts go to whichever channels you've set up
-        on <a href="/manage-notifications">Manage notifications</a> &mdash;
-        add one there first if you haven't yet.
+        within that distance. Alerts only reach you once you've registered
+        a channel to deliver to &mdash; add one on
+        <a href="/settings">Manage alerts</a> first if you haven't yet.
     </p>
 
     <div id="subscribe-logged-out" style="display: none">
@@ -31,13 +31,11 @@
             <input type="submit" value="Notify me">
         </fieldset>
     </form>
-    <p id="subscribe-status"></p>
+    <p id="subscribe-status" aria-live="polite"></p>
 
-    <h2>...or a whole city</h2>
+    <h2>Get notified about a city</h2>
     <p>
-        Prefer not to pick a point? Subscribe to a city instead &mdash;
-        by default you'll be matched whenever a detection's nearest city
-        (from a <a href="https://www.geonames.org/">GeoNames</a> lookup) is
+        By default you'll be matched whenever a detection's nearest city is
         the one you picked. Set a radius below to match by distance from
         the city's own point instead, which also catches detections whose
         nearest city happened to resolve to somewhere else nearby.
@@ -50,14 +48,14 @@
             <ul id="city-subscribe-results"></ul>
             <input type="hidden" id="city-subscribe-geoname-id" required>
 
-            <label for="city-subscribe-radius">Radius (miles, optional)</label>
-            <input type="number" id="city-subscribe-radius" name="radius_miles" step="any" min="1" max="500" placeholder="Exact city only">
+            <label for="city-subscribe-radius">Match radius (miles, optional)</label>
+            <input type="number" id="city-subscribe-radius" name="radius_miles" step="any" min="1" max="500" placeholder="Leave blank to match only this exact city">
 
             <input type="submit" value="Notify me" disabled>
         </fieldset>
     </form>
-    <p id="city-subscribe-status"></p>
-    <p><a href="/manage">Manage your existing subscriptions</a></p>
+    <p id="city-subscribe-status" aria-live="polite"></p>
+    <p><a href="/settings">Manage alerts</a></p>
 </div>
 
 <style>

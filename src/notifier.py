@@ -101,9 +101,21 @@ def area_header(area: dict[str, Any]) -> str:
     """'Within 25 mi of 33.7, -84.4' for a point subscription, or 'Near
     Springfield, IL, US' for a city one -- the label at the top of each
     group in a batched alert (see render_html/render_markdown).
+
+    Built from the *subscribed* city's own name (city_name/
+    city_admin1_code/city_country_code -- see notify.py's queue_notifications),
+    not town_label()'s per-detection nearest-city lookup: a radius-based
+    city subscription can match a detection whose own nearest town
+    resolves to somewhere else nearby, or to nothing at all, which used to
+    make this header fall back to a generic "your subscribed city" instead
+    of naming the city that was actually subscribed to.
     """
     if area["subscription_kind"] == "city":
-        return f"Near {town_label(area) or 'your subscribed city'}"
+        parts = [area["city_name"]]
+        parts.extend(
+            part for part in (area.get("city_admin1_code"), area.get("city_country_code")) if part
+        )
+        return f"Near {', '.join(parts)}"
     return (
         f"Within {area['sub_radius_miles']:g} mi of "
         f"{area['sub_latitude']:.4f}, {area['sub_longitude']:.4f}"

@@ -6,7 +6,7 @@
     <p>
         Create the account you'll use to
         <a href="/notify">set up alerts</a> and
-        <a href="/manage">manage your subscriptions</a>.
+        <a href="/settings">manage your subscriptions</a>.
     </p>
     <p>
         <small>
@@ -34,10 +34,27 @@
             <input type="submit" value="Create account">
         </fieldset>
     </form>
-    <p id="register-status"></p>
+    <p id="register-status" aria-live="polite"></p>
 </div>
 
 <script>
+    // Catches a mismatch as soon as the confirm field is filled in, rather
+    // than only after submit -- checked on every keystroke in either
+    // password field once the confirm field has something in it.
+    function checkPasswordsMatch() {
+        var form = document.getElementById('register-form');
+        var status = document.getElementById('register-status');
+        if (!form.confirm_password.value) {
+            status.textContent = '';
+            return;
+        }
+        status.textContent = form.password.value === form.confirm_password.value
+            ? ''
+            : 'Passwords do not match.';
+    }
+    document.getElementById('register-password').addEventListener('input', checkPasswordsMatch);
+    document.getElementById('register-confirm-password').addEventListener('input', checkPasswordsMatch);
+
     document.getElementById('register-form').addEventListener('submit', function (event) {
         event.preventDefault();
 

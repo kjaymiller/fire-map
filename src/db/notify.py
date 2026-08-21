@@ -28,7 +28,6 @@ two are told apart downstream (their ids come from separate tables, so
 
 import json
 import logging
-import math
 import uuid
 from collections.abc import Iterable
 from typing import Any, cast
@@ -46,19 +45,9 @@ from . import (
 )
 from .cache import event_id, get_client
 from .cities import nearest_city
+from .geo import distance_miles
 
 logger = logging.getLogger(__name__)
-
-EARTH_RADIUS_MILES = 3958.8
-
-
-def distance_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance between two points, in miles (haversine)."""
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 2 * EARTH_RADIUS_MILES * math.asin(math.sqrt(a))
 
 
 def queue_notifications(
@@ -163,7 +152,17 @@ def queue_notifications(
                     "longitude": lon,
                     "feature": feature,
                     "detection_key": detection_key,
+                    # The detection's own nearest-city lookup -- used for
+                    # the per-item "near X" line. Kept separate from
+                    # city_name/city_admin1_code/city_country_code below
+                    # (the *subscribed* city), since a radius-based city
+                    # subscription can match a detection whose own nearest
+                    # town resolves to somewhere else nearby, or nowhere at
+                    # all (town is None) -- see notifier.py's area_header.
                     "town": town,
+                    "city_name": sub["city_name"],
+                    "city_admin1_code": sub.get("city_admin1_code"),
+                    "city_country_code": sub.get("city_country_code"),
                 }
             )
 

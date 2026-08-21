@@ -56,6 +56,36 @@ CREATE INDEX IF NOT EXISTS idx_fire_detections_acq_datetime ON fire_detections (
 ALTER TABLE fire_detections ADD COLUMN IF NOT EXISTS geom GEOGRAPHY(Point, 4326)
     GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography) STORED;
 CREATE INDEX IF NOT EXISTS idx_fire_detections_geom ON fire_detections USING GIST (geom);
+-- One row per reload, written by insert_detections alongside its
+-- fire_detections rows -- see get_scans below for why this exists instead
+-- of aggregating fire_detections at request time. A global VIIRS fetch is
+-- tens of thousands of rows; "GROUP BY scan_id" over the full history table
+-- (this app's whole point is that it never stops growing) to answer "what
+-- was the latest scan" doesn't scale, and neither does "find the last N
+-- distinct scan_ids" once any single scan's row count gets large -- both
+-- end up reading roughly (scan row count x scans requested) rows. This
+-- table sidesteps that: it's one small row per scan, so listing the most
+-- recent N of them is just an index scan on fetched_at.
+CREATE TABLE IF NOT EXISTS scans (
+    scan_id UUID PRIMARY KEY,
+    fetched_at TIMESTAMPTZ NOT NULL,
+    detection_count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scans_fetched_at ON scans (fetched_at DESC);
+"""
+
+# Runs once, only when `scans` is empty -- backfills it from whatever's
+# already in fire_detections so scans that predate this table (and the
+# /scans history that references them) don't just vanish. This is the same
+# expensive full-table GROUP BY that get_scans used to do on every request;
+# doing it once at startup instead of on every homepage load is the entire
+# point.
+BACKFILL_SCANS = """
+INSERT INTO scans (scan_id, fetched_at, detection_count)
+SELECT scan_id, min(fetched_at), count(*)
+FROM fire_detections
+GROUP BY scan_id
+ON CONFLICT (scan_id) DO NOTHING;
 """
 
 INSERT = """
@@ -80,10 +110,16 @@ def get_pool() -> ConnectionPool:
 
 
 def init_db() -> None:
-    """Create the history table if it doesn't already exist."""
+    """Create the history table if it doesn't already exist, and backfill
+    `scans` from it once if `scans` is still empty (see BACKFILL_SCANS).
+    """
     logger.info("Ensuring fire_detections table exists")
     with get_pool().connection() as conn:
         conn.execute(SCHEMA)
+        (scans_is_empty,) = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM scans)").fetchone()
+        if scans_is_empty:
+            logger.info("scans table empty -- backfilling it from fire_detections")
+            conn.execute(BACKFILL_SCANS)
 
 
 def feature_to_row(feature: Feature, scan_id: uuid.UUID) -> dict[str, Any]:
@@ -126,6 +162,18 @@ def insert_detections(
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.executemany(INSERT, rows)
+            # Keep the scans summary table (see SCHEMA/get_scans) in sync as
+            # each scan lands, rather than deriving it from fire_detections
+            # at read time -- `now()` is stable within this transaction, so
+            # it matches every row's own `fetched_at` DEFAULT above.
+            cur.execute(
+                """
+                INSERT INTO scans (scan_id, fetched_at, detection_count)
+                VALUES (%(scan_id)s, now(), %(detection_count)s)
+                ON CONFLICT (scan_id) DO UPDATE SET detection_count = EXCLUDED.detection_count
+                """,
+                {"scan_id": scan_id, "detection_count": len(rows)},
+            )
         conn.commit()
 
     logger.info(f"Inserted {len(rows)} fire detections into Postgres ({scan_id=})")
@@ -253,14 +301,20 @@ def get_history_in_area(
 
 
 def get_scans(limit: int = 50) -> list[dict[str, Any]]:
-    """List recent scans (one row per reload), for grouping history by collection event."""
+    """List recent scans (one row per reload), for grouping history by collection event.
+
+    Reads the `scans` summary table (see SCHEMA/insert_detections) instead
+    of aggregating fire_detections directly -- a global VIIRS fetch is tens
+    of thousands of rows per scan, so both a plain `GROUP BY scan_id` over
+    the whole table *and* a "find the last N distinct scan_ids" query end up
+    reading on the order of (rows per scan x scans requested) rows either
+    way. This is by far the hottest caller (index() on every homepage load),
+    so it needs to be an index scan on a tiny table, not an aggregate over
+    a multi-million-row one.
+    """
     query = """
-        SELECT
-            scan_id,
-            min(fetched_at) AS fetched_at,
-            count(*) AS detection_count
-        FROM fire_detections
-        GROUP BY scan_id
+        SELECT scan_id, fetched_at, detection_count
+        FROM scans
         ORDER BY fetched_at DESC
         LIMIT %(limit)s
     """

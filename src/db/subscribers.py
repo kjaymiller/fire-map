@@ -4,13 +4,26 @@ Each subscriber registers a point and a radius; every reload, `notify.py`
 matches freshly fetched detections against this table to decide who gets
 alerted. This is durable (unlike the Valkey-backed notification queue in
 notify.py), so a subscription survives cache expiry and restarts.
+
+A subscription created with `ephemeral=True` (the map's "notify me about
+this area" flow, as opposed to the durable form on /notify) is meant to
+track a fire while it's active rather than to sit around forever: see
+`expire_ephemeral` below, called once per reload from update.reload_data
+with that reload's live detections, which deletes any ephemeral
+subscription whose radius no longer contains a currently-detected point.
+Non-ephemeral subscriptions are never touched by that -- they persist
+until a user deletes them, same as always. Either way, the detection
+history itself (Postgres' fire_detections table, notification_log) is
+untouched by expiry; only the subscription row goes away.
 """
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from psycopg.rows import dict_row
 
+from .geo import distance_miles
 from .postgres import get_pool
 
 logger = logging.getLogger(__name__)
@@ -27,11 +40,14 @@ CREATE TABLE IF NOT EXISTS subscribers (
 -- Added when subscriptions moved behind login -- ADD COLUMN IF NOT EXISTS
 -- so this is safe to rerun against a table created before that change.
 ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT 'legacy';
+-- Marks a subscription as tied to an active fire rather than durable --
+-- see expire_ephemeral below and the module docstring above.
+ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS ephemeral BOOLEAN NOT NULL DEFAULT false;
 """
 
 INSERT = """
-INSERT INTO subscribers (owner, contact, latitude, longitude, radius_miles)
-VALUES (%(owner)s, %(contact)s, %(latitude)s, %(longitude)s, %(radius_miles)s)
+INSERT INTO subscribers (owner, contact, latitude, longitude, radius_miles, ephemeral)
+VALUES (%(owner)s, %(contact)s, %(latitude)s, %(longitude)s, %(radius_miles)s, %(ephemeral)s)
 RETURNING id;
 """
 
@@ -49,11 +65,13 @@ def add_subscriber(
     latitude: float,
     longitude: float,
     radius_miles: float,
+    ephemeral: bool = False,
 ) -> int:
     """Register a subscription, returning its new id.
 
     `owner` is the logged-in username that created it (see users.py) --
-    only that user can cancel it later.
+    only that user can cancel it later. `ephemeral=True` marks this as
+    tied to an active fire rather than durable -- see expire_ephemeral.
     """
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -65,13 +83,17 @@ def add_subscriber(
                     "latitude": latitude,
                     "longitude": longitude,
                     "radius_miles": radius_miles,
+                    "ephemeral": ephemeral,
                 },
             )
             row = cur.fetchone()
         conn.commit()
 
     assert row is not None  # INSERT ... RETURNING id always returns a row
-    logger.info(f"Added subscriber {row[0]} ({radius_miles} mi radius, owner={owner!r})")
+    logger.info(
+        f"Added subscriber {row[0]} ({radius_miles} mi radius, owner={owner!r}, "
+        f"ephemeral={ephemeral})"
+    )
     return row[0]
 
 
@@ -143,3 +165,44 @@ def remove_subscriber(subscriber_id: int, owner: str) -> bool:
             removed = cur.rowcount > 0
         conn.commit()
     return removed
+
+
+def expire_ephemeral(active_points: Iterable[tuple[float, float]]) -> list[int]:
+    """Delete every ephemeral subscription whose radius no longer contains
+    any currently-live detection.
+
+    `active_points` is this reload's fresh (latitude, longitude) pairs --
+    see update.reload_data, which calls this right after queue_notifications
+    with the same detections notify.py just matched. A non-ephemeral
+    subscription is never a candidate here regardless of what's nearby;
+    only ones created with ephemeral=True (see add_subscriber) are. Nothing
+    else about the fire is touched -- fire_detections and notification_log
+    keep their full history either way, so "expires" here means only the
+    subscription row, not the record of what it once matched.
+
+    Returns the ids removed.
+    """
+    active_points = list(active_points)
+    subs = get_subscribers()
+    expired_ids = [
+        sub["id"]
+        for sub in subs
+        if sub["ephemeral"]
+        and not any(
+            distance_miles(lat, lon, sub["latitude"], sub["longitude"]) <= sub["radius_miles"]
+            for lat, lon in active_points
+        )
+    ]
+    if not expired_ids:
+        return []
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM subscribers WHERE id = ANY(%(ids)s)",
+                {"ids": expired_ids},
+            )
+        conn.commit()
+
+    logger.info(f"Expired {len(expired_ids)} ephemeral subscription(s) with no fire left nearby")
+    return expired_ids

@@ -6,7 +6,7 @@ from geojson import FeatureCollection
 
 from src.viirs.get_fire_data import get_fire_data
 
-from . import RELOAD_LOCK_TTL_SECONDS, UPDATE_INTERVAL_SECONDS, cache, notify
+from . import RELOAD_LOCK_TTL_SECONDS, UPDATE_INTERVAL_SECONDS, cache, notify, subscribers
 from .postgres import init_db, insert_detections
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,20 @@ def reload_data(ttl: int = UPDATE_INTERVAL_SECONDS) -> FeatureCollection:
     queued = notify.queue_notifications(features, scan_id=scan_id)
     if queued:
         logger.info(f"Queued {queued} location alerts for ({scan_id=})")
+
+    # Ephemeral point subscriptions (the map's "notify me about this area"
+    # flow) only last as long as this reload's live snapshot still shows a
+    # detection within their radius -- see subscribers.expire_ephemeral.
+    # Only reached once features is confirmed non-empty (see the early
+    # return above), so a transient empty FIRMS response can't wipe out
+    # every ephemeral subscription on its own.
+    active_points = [
+        (feature["geometry"]["coordinates"][1], feature["geometry"]["coordinates"][0])
+        for feature in features
+    ]
+    expired = subscribers.expire_ephemeral(active_points)
+    if expired:
+        logger.info(f"Expired {len(expired)} ephemeral subscription(s) ({scan_id=})")
 
     logger.info(f"Reload complete: {len(features)} detections ({scan_id=})")
     return feature_collection

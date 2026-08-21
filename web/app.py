@@ -11,10 +11,9 @@ import fastapi
 import psycopg
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
-from more_itertools import bucket
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -147,15 +146,6 @@ def get_current_user(
 CurrentUser = fastapi.Depends(get_current_user)
 
 
-def get_confidence_breakdown(features: list[dict[str, Any]]) -> dict[str, int]:
-    """Count detections per confidence level."""
-    if not features:
-        return {}
-
-    batches = bucket(features, key=lambda feature: feature["properties"]["confidence"])
-    return {key: len(list(batches[key])) for key in list(batches)}
-
-
 @api.get("/health")
 def health() -> dict[str, str]:
     """Liveness/readiness probe -- no DB or cache access, just confirms the
@@ -166,13 +156,20 @@ def health() -> dict[str, str]:
 
 @api.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    """Render the homepage using the current snapshot from Valkey."""
-    feature_collection = cache.get_current()
+    """Render the homepage shell.
 
-    if feature_collection is None:
-        feature_collection = reload_data_guarded()
-
-    confidences = get_confidence_breakdown(feature_collection["features"])
+    Deliberately does *not* touch the Valkey-cached snapshot -- map.html's
+    JS fetches that itself via GET /current once the page shell has loaded
+    (see renderDetections/renderStats there), and computes the same total
+    count + confidence breakdown that used to be rendered server-side here.
+    Doing it here too would mean a second, redundant Valkey GET + MGET of
+    every cached event on every homepage load just to compute numbers the
+    client is about to fetch and compute anyway -- and, worse, this route
+    couldn't send back so much as the page's <!DOCTYPE> until that finished.
+    latest_run is the one stat still rendered here since it's a single cheap
+    row from the `scans` table (see get_scans), not something worth a whole
+    extra client-side fetch of the live snapshot for.
+    """
     scans = get_scans(limit=1)
     latest_run = scans[0] if scans else None
 
@@ -180,9 +177,6 @@ def index(request: Request) -> HTMLResponse:
         request,
         "index.html",
         {
-            "points": feature_collection,
-            "data": len(feature_collection["features"]),
-            "confidences": confidences,
             "latest_run": latest_run,
             "current_user": get_session_user(request),
         },
@@ -215,25 +209,34 @@ def notify_page(request: Request) -> HTMLResponse:
     )
 
 
-@api.get("/manage", response_class=HTMLResponse)
-def manage_page(request: Request) -> HTMLResponse:
-    """Page for viewing and cancelling your own subscriptions. Reads from
-    /subscribers/mine and deletes via /subscribers/{id}.
+@api.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request) -> HTMLResponse:
+    """Combined account page: notification channels (email, Discord --
+    reads from /channels/mine, posts to /channels), alert areas and city
+    alerts (reads from /subscribers/mine and /city-subscribers/mine,
+    cancels via their respective DELETE routes), and recent trigger
+    history (/notification-events/mine). Used to be two separate pages
+    (/manage and /manage-notifications, both still redirect here).
     """
     return templates.TemplateResponse(
-        request, "manage.html", {"current_user": get_session_user(request)}
+        request, "settings.html", {"current_user": get_session_user(request)}
     )
 
 
-@api.get("/manage-notifications", response_class=HTMLResponse)
-def manage_notifications_page(request: Request) -> HTMLResponse:
-    """Page for managing the channels (email, Discord) your location alerts
-    (see /notify) actually get delivered to. Requires an account -- reads
-    from /channels/mine and posts to /channels.
+@api.get("/manage", response_class=RedirectResponse, status_code=308)
+def manage_page() -> str:
+    """Old URL for /settings -- kept as a redirect for anything bookmarked
+    or linked against it before the two account pages merged.
     """
-    return templates.TemplateResponse(
-        request, "manage_notifications.html", {"current_user": get_session_user(request)}
-    )
+    return "/settings"
+
+
+@api.get("/manage-notifications", response_class=RedirectResponse, status_code=308)
+def manage_notifications_page() -> str:
+    """Old URL for /settings -- kept as a redirect for anything bookmarked
+    or linked against it before the two account pages merged.
+    """
+    return "/settings"
 
 
 class LoginRequest(BaseModel):
@@ -589,6 +592,17 @@ class SubscriptionRequest(BaseModel):
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     radius_miles: float = Field(DEFAULT_ALERT_RADIUS_MILES, gt=0, le=500)
+    # False (the default) is the durable /notify-page subscription that
+    # persists until deleted. True is the map's "notify me about this
+    # area" flow -- it's auto-deleted once a reload's live snapshot no
+    # longer shows any detection inside radius_miles of this point (see
+    # subscribers.expire_ephemeral); the fire's own history still persists
+    # in fire_detections/notification_log regardless.
+    ephemeral: bool = Field(
+        False,
+        description="If true, this subscription is deleted once no active "
+        "detection remains within radius_miles of this point.",
+    )
 
 
 @api.post("/subscribers")
@@ -609,6 +623,7 @@ def create_subscriber(
         latitude=payload.latitude,
         longitude=payload.longitude,
         radius_miles=payload.radius_miles,
+        ephemeral=payload.ephemeral,
     )
     return {"id": subscriber_id}
 

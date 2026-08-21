@@ -9,18 +9,24 @@
             Want an alert when a fire shows up near a point you care about?
             <a href="/register">Create an account</a>, then
             <a href="/notify">set up a location + radius</a>. Already
-            subscribed? <a href="/manage">Manage your subscriptions</a>.
+            got one? <a href="/settings">Manage alerts</a>.
         </p>
     </div>
 {% include "map.html" %}
 <div id="map-stats">
-    <small>{{ data }} total datapoints</small>
+    <!-- Total datapoints + the per-confidence breakdown are filled in by
+         map.html's JS once its GET /current fetch resolves (see
+         renderStats there), rather than index() computing them from a
+         second, redundant Valkey read of the same snapshot server-side.
+         latest_run stays server-rendered -- it's a single cheap row from
+         the `scans` table (see src/db/postgres.py's get_scans), not
+         something the client needs to fetch a whole FeatureCollection
+         for. -->
+    <small id="total-datapoints"></small>
     {% if latest_run %}
     <small>Latest run: {{ latest_run.fetched_at.strftime('%Y-%m-%d %H:%M:%S %Z') }} &mdash; {{ latest_run.detection_count }} detections</small>
     {% endif %}
-    {% for ranking in confidences %}
-    <small>{{ ranking }} confidence: {{ confidences[ranking] }}</small>
-    {% endfor %}
+    <span id="confidence-breakdown"></span>
 </div>
 
 <footer id="disclaimer">
@@ -30,8 +36,8 @@
             NASA's VIIRS algorithm from least to most certain it actually saw
             fire (rather than sun glint, hot ground, or another false
             positive): <em>low</em> &lt; <em>nominal</em> &lt; <em>high</em>.
-            "Nominal" is the standard/default confidence level, not a step
-            below "low" &mdash; most detections fall here. <em>Low</em>-confidence
+            "Nominal" is the normal, most common confidence level, not a
+            step below "low" &mdash; most detections fall here. <em>Low</em>-confidence
             points are the most likely to be noise; <em>high</em>-confidence
             points are the most likely to be a real, sizable fire.
         </small>

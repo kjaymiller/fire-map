@@ -234,7 +234,7 @@
             <a href="/">Map</a>
             {% if current_user %}
             <div class="notif-menu">
-                <button type="button" id="notif-toggle" aria-haspopup="true" aria-expanded="false" title="Notifications">
+                <button type="button" id="notif-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Notifications" title="Notifications">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M6 8a6 6 0 1 1 12 0c0 3 1 4.5 2 6H4c1-1.5 2-3 2-6Z"></path>
                         <path d="M9.5 18a2.5 2.5 0 0 0 5 0"></path>
@@ -248,17 +248,18 @@
             </div>
             {% endif %}
             <div class="account-menu">
-                <button type="button" id="account-toggle" aria-haspopup="true" aria-expanded="false" title="Account">
+                <button type="button" id="account-toggle" aria-haspopup="true" aria-expanded="false" aria-label="Account" title="Account">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <circle cx="12" cy="8" r="4"></circle>
                         <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"></path>
                     </svg>
                 </button>
                 <div id="account-dropdown" class="account-dropdown">
-                    <a href="/notify">Get notified</a>
-                    <a href="/manage">Manage subscriptions</a>
                     {% if current_user %}
-                        <a href="/manage-notifications">Manage notifications</a>
+                        <a href="/notify">Get notified</a>
+                    {% endif %}
+                    <a href="/settings">Manage alerts</a>
+                    {% if current_user %}
                         <div class="account-dropdown-divider"></div>
                         <span class="nav-user">Signed in as {{ current_user }}</span>
                         <button type="button" id="logout-button">Log out</button>

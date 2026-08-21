@@ -2,9 +2,49 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<!-- defer -- these are only needed by InitMap() (fired on body onload), so
+     they don't need to block HTML parsing the way a plain <script> in
+     <head> does. -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" defer></script>
 <style>
+    #map-container {
+        position: relative;
+    }
+
+    /* Sits over the map while /current is in flight (see the fetch below)
+       -- covers the tiles/controls so it's obvious detections haven't
+       loaded yet, rather than the map just quietly having zero markers. */
+    #map-loading-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 1000; /* above Leaflet's own panes */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        background: rgba(255, 255, 255, 0.75);
+        font-size: 1.2rem;
+        color: #606c76;
+    }
+
+    #map-loading-overlay.is-hidden {
+        display: none;
+    }
+
+    .map-spinner {
+        width: 1.6rem;
+        height: 1.6rem;
+        border: 3px solid #d1d1d1;
+        border-top-color: #9b4dca;
+        border-radius: 50%;
+        animation: map-spinner-spin 0.8s linear infinite;
+    }
+
+    @keyframes map-spinner-spin {
+        to { transform: rotate(360deg); }
+    }
+
     .point-popup {
         font-size: 1.3rem;
     }
@@ -39,6 +79,40 @@
 
     .point-popup-radius-info {
         margin: 0.4rem 0 0;
+        font-size: 1.1rem;
+        color: #606c76;
+    }
+
+    .point-popup-choice {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 0.6rem;
+        font-size: 1.1rem;
+    }
+
+    .point-popup-choice label {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+        margin-bottom: 0;
+    }
+
+    .point-popup-kind-caption {
+        margin: 0 0 0.6rem;
+        font-size: 0.95rem;
+        color: #606c76;
+    }
+
+    .point-popup-durable-label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 1.1rem;
+        margin-top: 0.3rem;
+    }
+
+    .point-popup-nearest-town {
+        margin: 0.2rem 0 0.6rem;
         font-size: 1.1rem;
         color: #606c76;
     }
@@ -136,8 +210,6 @@
             disableClusteringAtZoom: 5
         });
 
-        var points = {{ points | tojson }};
-
         // acq_datetime comes back as a naive ISO string but is actually UTC
         // (FIRMS timestamps are GMT-based) -- append 'Z' so the browser
         // doesn't interpret it as local time.
@@ -150,22 +222,6 @@
         // satellite observation time -- so the freshest fires stand out.
         var MAX_OPACITY = 0.9;
         var MIN_OPACITY = 0.15;
-
-        var times = points.features.map(function (feature) {
-            return parseAcquiredAt(feature.properties.datetime);
-        });
-        var oldestTime = Math.min.apply(null, times);
-        var newestTime = Math.max.apply(null, times);
-        var timeSpan = newestTime - oldestTime;
-
-        function opacityForAge(acquiredAt) {
-            if (!timeSpan) {
-                return MAX_OPACITY;
-            }
-            var age = newestTime - acquiredAt; // 0 = newest, timeSpan = oldest
-            var ageRatio = age / timeSpan;
-            return MAX_OPACITY - ageRatio * (MAX_OPACITY - MIN_OPACITY);
-        }
 
         // "2 minutes ago" / "5 hours ago" / "3 days ago", relative to the
         // viewer's clock (not the other points in this snapshot).
@@ -263,9 +319,66 @@
         // opening before that fetch would have resolved.
         var currentUsername = {{ current_user | tojson }};
 
+        // Looked up as soon as any popup opens (marker or empty-map click)
+        // -- shown right away via .point-popup-nearest-town regardless of
+        // login state, and reused (not re-fetched) by the "Nearest town"
+        // alert option below since it's the same point either way.
+        function fetchNearestTown(latlng) {
+            return fetch(
+                '/towns/nearest?lat=' + latlng.lat + '&lon=' + latlng.lng,
+                { credentials: 'same-origin' }
+            )
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('none nearby');
+                    }
+                    return response.json();
+                })
+                .catch(function () {
+                    return null;
+                });
+        }
+
+        // Shared by every place a nearest-city lookup can come back empty
+        // (open ocean, remote wilderness, or the dataset just hasn't
+        // loaded) -- one phrase, not two slightly different ones.
+        var NO_NEARBY_CITY_MESSAGE = 'No nearby city found for this point.';
+
+        function townDisplayLabel(town) {
+            return [town.name, town.admin1_code, town.country_code].filter(Boolean).join(', ') +
+                ' (' + town.distance_miles.toFixed(1) + ' mi away)';
+        }
+
+        // Fills in the "Looking up the nearest town…" placeholder every
+        // popup opens with -- see the .point-popup-nearest-town markup
+        // below. `townLookup` is the (already in-flight) promise from
+        // fetchNearestTown, not called again here.
+        function showNearestTown(container, townLookup) {
+            var el = container && container.querySelector('.point-popup-nearest-town');
+            if (!el) {
+                return;
+            }
+            townLookup.then(function (town) {
+                el.textContent = town
+                    ? 'Nearest town: ' + townDisplayLabel(town)
+                    : NO_NEARBY_CITY_MESSAGE;
+            });
+        }
+
         // Shared by both marker popups (centered on that detection) and the
         // empty-map popup (centered on the clicked point) -- the only
         // difference between the two is what's above this in the popup.
+        //
+        // Offers two independent kinds of alert, picked with the radio
+        // buttons below and toggled by wireNotifyForm:
+        //   - "This area": a point + radius subscription created with
+        //     ephemeral=true (see /subscribers) -- it's deleted on its own
+        //     once a reload's live detections no longer include anything
+        //     inside the radius, i.e. it lasts only as long as this spot
+        //     keeps getting hit.
+        //   - "Nearest town": looks up /towns/nearest for this point and
+        //     subscribes to that city (see /city-subscribers), same as the
+        //     durable city form on /notify, with an optional match radius.
         function notifyFormHtml() {
             if (!currentUsername) {
                 return (
@@ -275,36 +388,68 @@
             }
 
             return (
+                '<div class="point-popup-choice">' +
+                '<label><input type="radio" name="alert_kind" value="area" checked> This area</label>' +
+                '<label><input type="radio" name="alert_kind" value="town"> Nearest town</label>' +
+                '</div>' +
+                '<p class="point-popup-kind-caption">' +
+                '"This area" clears itself once the spot goes quiet, unless you check ' +
+                '"keep watching" below. "Nearest town" stays until you cancel it.</p>' +
                 '<form class="point-popup-form">' +
+                '<p class="point-popup-hint">Alerts only reach you once you\'ve registered a ' +
+                'channel to deliver to &mdash; add one on <a href="/settings">Manage alerts</a> ' +
+                'first if you haven\'t yet.</p>' +
+                '<div class="point-popup-area-fields">' +
                 '<label>Radius (miles)' +
                 '<input type="number" name="radius_miles" step="any" min="1" max="500" value="25" required></label>' +
-                '<button type="submit">Notify me here</button>' +
-                '</form>' +
                 '<p class="point-popup-radius-info"></p>' +
-                '<p class="point-popup-status"></p>' +
-                '<p class="point-popup-hint">Alerts go to whichever channels you\'ve set up on ' +
-                '<a href="/manage-notifications">Manage notifications</a>.</p>'
+                '<label class="point-popup-durable-label">' +
+                '<input type="checkbox" name="durable"> Keep watching after it clears</label>' +
+                '</div>' +
+                '<div class="point-popup-town-fields" hidden>' +
+                '<label>Match radius (miles, optional)' +
+                '<input type="number" name="town_radius_miles" step="any" min="1" max="500" ' +
+                'placeholder="Leave blank to match only this exact city"></label>' +
+                '</div>' +
+                '<button type="submit">Notify me</button>' +
+                '</form>' +
+                '<p class="point-popup-status" aria-live="polite"></p>'
             );
         }
 
-        // Wires up the form built by notifyFormHtml() above, if there is
-        // one (nothing to wire up when logged out). `container` is the
-        // popup's root element and `latlng` is whatever point the alert
-        // should be centered on.
+        // Wires up the markup built by notifyFormHtml() above, if there is
+        // any (nothing to wire up when logged out). `container` is the
+        // popup's root element, `latlng` is whatever point the alert
+        // should be centered on, and `townLookup` is the promise from
+        // fetchNearestTown for that same point (already in flight -- see
+        // showNearestTown above -- so picking "Nearest town" here doesn't
+        // trigger a second lookup).
         //
         // Also draws the radius preview (dashed circle + highlighted hot
-        // points) for as long as this popup stays open -- redrawn on every
-        // radius edit, cleared on popupclose so it doesn't linger once the
-        // form goes away.
-        function wireNotifyForm(container, latlng) {
+        // points) for as long as the "This area" option is selected and
+        // the popup stays open -- redrawn on every radius edit, cleared
+        // when switching to "Nearest town" or on popupclose.
+        function wireNotifyForm(container, latlng, townLookup) {
             var form = container && container.querySelector('.point-popup-form');
             if (!form) {
                 return;
             }
 
+            var areaFields = container.querySelector('.point-popup-area-fields');
+            var townFields = container.querySelector('.point-popup-town-fields');
             var radiusInfo = container.querySelector('.point-popup-radius-info');
+            var radios = form.querySelectorAll('input[name="alert_kind"]');
+
+            function currentKind() {
+                var checked = form.querySelector('input[name="alert_kind"]:checked');
+                return checked ? checked.value : 'area';
+            }
 
             function updateRadiusPreview() {
+                if (currentKind() !== 'area') {
+                    clearRadiusPreview();
+                    return;
+                }
                 var radiusMiles = parseFloat(form.radius_miles.value);
                 var hot = showRadiusPreview(latlng, radiusMiles);
 
@@ -320,8 +465,22 @@
                 }
             }
 
+            function updateVisibility() {
+                var kind = currentKind();
+                areaFields.hidden = kind !== 'area';
+                townFields.hidden = kind !== 'town';
+                if (kind === 'town') {
+                    clearRadiusPreview();
+                } else {
+                    updateRadiusPreview();
+                }
+            }
+
+            Array.prototype.forEach.call(radios, function (radio) {
+                radio.addEventListener('change', updateVisibility);
+            });
             form.radius_miles.addEventListener('input', updateRadiusPreview);
-            updateRadiusPreview();
+            updateVisibility();
 
             map.once('popupclose', clearRadiusPreview);
 
@@ -330,10 +489,52 @@
 
                 var status = container.querySelector('.point-popup-status');
                 var submitButton = form.querySelector('button[type="submit"]');
+                var kind = currentKind();
+
+                if (kind === 'town') {
+                    status.textContent = 'Saving…';
+                    townLookup.then(function (town) {
+                        if (!town) {
+                            status.textContent = NO_NEARBY_CITY_MESSAGE;
+                            return;
+                        }
+
+                        var radiusRaw = form.town_radius_miles.value;
+                        var payload = {
+                            geoname_id: town.geoname_id,
+                            radius_miles: radiusRaw ? parseFloat(radiusRaw) : null
+                        };
+
+                        return fetch('/city-subscribers', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'same-origin',
+                            body: JSON.stringify(payload)
+                        })
+                            .then(function (response) {
+                                if (!response.ok) {
+                                    return response.json().then(function (body) {
+                                        throw new Error(body.detail || ('Request failed: ' + response.status));
+                                    });
+                                }
+                                return response.json();
+                            })
+                            .then(function () {
+                                status.textContent = 'Subscribed — you\'ll be alerted on fires near ' + town.name + '.';
+                                submitButton.disabled = true;
+                            });
+                    }).catch(function (err) {
+                        status.textContent = 'Could not save that subscription: ' + err.message;
+                    });
+                    return;
+                }
+
+                var durable = form.durable.checked;
                 var payload = {
                     latitude: latlng.lat,
                     longitude: latlng.lng,
-                    radius_miles: parseFloat(form.radius_miles.value)
+                    radius_miles: parseFloat(form.radius_miles.value),
+                    ephemeral: !durable
                 };
 
                 status.textContent = 'Saving…';
@@ -354,7 +555,8 @@
                     })
                     .then(function () {
                         status.textContent = 'Subscribed — you\'ll be alerted on fires within '
-                            + payload.radius_miles + ' mi of this point.';
+                            + payload.radius_miles + ' mi of this point'
+                            + (durable ? '.' : ', until this area goes quiet.');
                         submitButton.disabled = true;
                     })
                     .catch(function (err) {
@@ -363,59 +565,151 @@
             });
         }
 
-        points.features.forEach(function (feature) {
-            var coords = feature.geometry.coordinates; // GeoJSON order: [lon, lat]
-            var confidence = feature.properties.confidence;
-            var color = confidenceColors[confidence] || 'blue';
-            var acquiredAt = parseAcquiredAt(feature.properties.datetime);
-            var latlng = L.latLng(coords[1], coords[0]);
-
-            var marker = L.circleMarker(latlng, {
-                radius: 5,
-                color: color,
-                fillColor: color,
-                fillOpacity: opacityForAge(acquiredAt),
-                stroke: false
+        // Builds every detection marker from a /current FeatureCollection
+        // and drops them into primaryMarkers/lowConfidenceMarkers. Called
+        // once the async fetch below resolves, rather than the page's
+        // initial HTML embedding the whole FeatureCollection inline -- that
+        // used to force the browser to hold off rendering anything (not
+        // even the base map tiles) until this route's Valkey read and
+        // Jinja's serialization of every point had both finished and made
+        // it down the wire. The map/tiles now render immediately;
+        // detections pop in a beat later once this resolves.
+        function renderDetections(points) {
+            // Fade older detections out relative to the newest/oldest VIIRS
+            // acquisition times in *this* snapshot -- not fetched_at, the
+            // actual satellite observation time -- so the freshest fires
+            // stand out.
+            var times = points.features.map(function (feature) {
+                return parseAcquiredAt(feature.properties.datetime);
             });
+            var oldestTime = Math.min.apply(null, times);
+            var newestTime = Math.max.apply(null, times);
+            var timeSpan = newestTime - oldestTime;
 
-            allDetections.push({ latlng: latlng, confidence: confidence });
-
-            // Bound empty so the popup exists to open on click -- the real
-            // content (detection details + the same notify-here form the
-            // empty-map popup below uses) is filled in on open, once
-            // currentUsername has had a chance to resolve.
-            marker.bindPopup('');
-            marker.on('popupopen', function (e) {
-                e.popup.setContent(
-                    '<div class="point-popup">' +
-                    '<strong>' + confidence + ' confidence</strong><br>' +
-                    formatAge(acquiredAt) + '<br>' +
-                    'FRP: ' + feature.properties.frp +
-                    notifyFormHtml() +
-                    '</div>'
-                );
-                wireNotifyForm(e.popup.getElement(), latlng);
-            });
-
-            // Path layers bubble their mouse events up to the map by
-            // default (bubblingMouseEvents) -- without this, a click on a
-            // marker would also trigger the empty-map handler below a beat
-            // later, replacing this popup with the generic one instead of
-            // showing both. Zoom (dblclick) is left alone; only 'click'
-            // needs stopping since that's the only event the map handler
-            // below acts on.
-            marker.on('click', function (e) {
-                L.DomEvent.stopPropagation(e);
-            });
-
-            if (confidence === 'low') {
-                lowConfidenceMarkers.addLayer(marker);
-            } else {
-                primaryMarkers.addLayer(marker);
+            function opacityForAge(acquiredAt) {
+                if (!timeSpan) {
+                    return MAX_OPACITY;
+                }
+                var age = newestTime - acquiredAt; // 0 = newest, timeSpan = oldest
+                var ageRatio = age / timeSpan;
+                return MAX_OPACITY - ageRatio * (MAX_OPACITY - MIN_OPACITY);
             }
-        });
 
+            points.features.forEach(function (feature) {
+                var coords = feature.geometry.coordinates; // GeoJSON order: [lon, lat]
+                var confidence = feature.properties.confidence;
+                var color = confidenceColors[confidence] || 'blue';
+                var acquiredAt = parseAcquiredAt(feature.properties.datetime);
+                var latlng = L.latLng(coords[1], coords[0]);
+
+                var marker = L.circleMarker(latlng, {
+                    radius: 5,
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: opacityForAge(acquiredAt),
+                    stroke: false
+                });
+
+                allDetections.push({ latlng: latlng, confidence: confidence });
+
+                // Bound empty so the popup exists to open on click -- the real
+                // content (detection details + the same notify-here form the
+                // empty-map popup below uses) is filled in on open, once
+                // currentUsername has had a chance to resolve.
+                marker.bindPopup('');
+                marker.on('popupopen', function (e) {
+                    e.popup.setContent(
+                        '<div class="point-popup">' +
+                        '<strong>' + confidence + ' confidence</strong><br>' +
+                        formatAge(acquiredAt) + '<br>' +
+                        'FRP: ' + feature.properties.frp +
+                        '<p class="point-popup-nearest-town">Looking up the nearest town…</p>' +
+                        notifyFormHtml() +
+                        '</div>'
+                    );
+                    var townLookup = fetchNearestTown(latlng);
+                    var popupElement = e.popup.getElement();
+                    showNearestTown(popupElement, townLookup);
+                    wireNotifyForm(popupElement, latlng, townLookup);
+                });
+
+                // Path layers bubble their mouse events up to the map by
+                // default (bubblingMouseEvents) -- without this, a click on a
+                // marker would also trigger the empty-map handler below a beat
+                // later, replacing this popup with the generic one instead of
+                // showing both. Zoom (dblclick) is left alone; only 'click'
+                // needs stopping since that's the only event the map handler
+                // below acts on.
+                marker.on('click', function (e) {
+                    L.DomEvent.stopPropagation(e);
+                });
+
+                if (confidence === 'low') {
+                    lowConfidenceMarkers.addLayer(marker);
+                } else {
+                    primaryMarkers.addLayer(marker);
+                }
+            });
+        }
+
+        // Fills in the "N total datapoints" / per-confidence-level counts
+        // under the map -- these used to be computed server-side in
+        // index() from its own Valkey read of this same snapshot; now
+        // they're derived from the same /current response the map itself
+        // just fetched, instead of index() doing a second, redundant read
+        // of the live cache just to hand back a couple of numbers.
+        function renderStats(points) {
+            var totalEl = document.getElementById('total-datapoints');
+            if (totalEl) {
+                totalEl.textContent = points.features.length + ' total datapoints';
+            }
+
+            var breakdownEl = document.getElementById('confidence-breakdown');
+            if (!breakdownEl) {
+                return;
+            }
+            var counts = {};
+            points.features.forEach(function (feature) {
+                var confidence = feature.properties.confidence;
+                counts[confidence] = (counts[confidence] || 0) + 1;
+            });
+            breakdownEl.innerHTML = '';
+            Object.keys(counts).forEach(function (confidence) {
+                var stat = document.createElement('small');
+                stat.textContent = confidence + ' confidence: ' + counts[confidence];
+                breakdownEl.appendChild(stat);
+            });
+        }
+
+        // primaryMarkers is added to the map right away (empty) so the base
+        // tiles paint immediately -- renderDetections drops markers into it
+        // once they've loaded, and being a live layer group, they show up
+        // as soon as they're added rather than needing this to be added
+        // again afterward.
         map.addLayer(primaryMarkers);
+
+        var mapLoadingOverlay = document.getElementById('map-loading-overlay');
+
+        function hideMapLoadingOverlay() {
+            if (mapLoadingOverlay) {
+                mapLoadingOverlay.classList.add('is-hidden');
+            }
+        }
+
+        fetch('/current', { credentials: 'same-origin' })
+            .then(function (response) { return response.json(); })
+            .then(function (points) {
+                renderDetections(points);
+                renderStats(points);
+                hideMapLoadingOverlay();
+            })
+            .catch(function (err) {
+                console.error('Failed to load fire detections:', err);
+                // Don't leave the overlay up forever on failure -- an empty
+                // map with no markers is a more honest state than a spinner
+                // that never resolves.
+                hideMapLoadingOverlay();
+            });
 
         document.getElementById('show-all-readings').addEventListener('change', function (event) {
             if (event.target.checked) {
@@ -424,6 +718,121 @@
                 map.removeLayer(lowConfidenceMarkers);
             }
         });
+
+        // --- The signed-in viewer's own alert areas ---
+        //
+        // Drawn as solid blue boundaries so they're immediately
+        // distinguishable both from fire detections (red/yellow/gray dots)
+        // and from the dashed purple radius preview shown while creating a
+        // *new* alert (see showRadiusPreview) -- these are already-active
+        // subscriptions, not a live preview. Blue rather than yellow
+        // specifically because "nominal confidence" markers are already
+        // plain yellow -- an outline and a detection dot need to read as
+        // different things even when one sits right on top of the other.
+        var myAlertAreas = L.layerGroup();
+        var ALERT_AREA_COLOR = '#2f6fed';
+        var showMyAlertAreas = true;
+
+        function alertAreaPopupHtml(label, detailHtml) {
+            return (
+                '<div class="point-popup">' +
+                '<strong>' + label + '</strong><br>' +
+                detailHtml +
+                '<p class="point-popup-hint"><a href="/settings">Manage alerts</a></p>' +
+                '</div>'
+            );
+        }
+
+        function addPointAlertArea(sub) {
+            var center = [sub.latitude, sub.longitude];
+            var label = sub.contact || (center[0].toFixed(3) + ', ' + center[1].toFixed(3));
+            var circle = L.circle(center, {
+                radius: sub.radius_miles * 1609.34, // miles -> meters
+                color: ALERT_AREA_COLOR,
+                weight: 3,
+                fillColor: ALERT_AREA_COLOR,
+                fillOpacity: 0.06
+            });
+            circle.bindPopup(alertAreaPopupHtml(
+                label,
+                sub.radius_miles + ' mi radius &mdash; ' + (sub.ephemeral ? 'auto-expires' : 'durable')
+            ));
+            myAlertAreas.addLayer(circle);
+        }
+
+        function addCityAlertArea(sub) {
+            var center = [sub.latitude, sub.longitude];
+            var cityLabel = [sub.city_name, sub.admin1_code, sub.country_code].filter(Boolean).join(', ');
+            var label = sub.contact || cityLabel;
+            var shape, detail;
+
+            if (sub.radius_miles) {
+                shape = L.circle(center, {
+                    radius: sub.radius_miles * 1609.34,
+                    color: ALERT_AREA_COLOR,
+                    weight: 3,
+                    fillColor: ALERT_AREA_COLOR,
+                    fillOpacity: 0.06
+                });
+                detail = sub.radius_miles + ' mi match radius around ' + cityLabel;
+            } else {
+                // No radius set -- this matches only the exact
+                // nearest-city case (see notify.py), so there's no
+                // meaningful area to bound. A fixed-size ring at the
+                // city's own point marks it instead of a to-scale circle.
+                shape = L.circleMarker(center, {
+                    radius: 10,
+                    color: ALERT_AREA_COLOR,
+                    weight: 3,
+                    fill: false
+                });
+                detail = 'Exact nearest-city match: ' + cityLabel;
+            }
+
+            shape.bindPopup(alertAreaPopupHtml(label, detail));
+            myAlertAreas.addLayer(shape);
+        }
+
+        // Only the signed-in viewer's own areas -- /subscribers/mine and
+        // /city-subscribers/mine are already scoped that way server-side.
+        // Failures here (logged out, a transient fetch error) just leave
+        // the layer empty; they shouldn't break the rest of the map.
+        function loadMyAlertAreas() {
+            if (!currentUsername) {
+                return;
+            }
+
+            Promise.all([
+                fetch('/subscribers/mine', { credentials: 'same-origin' })
+                    .then(function (r) { return r.ok ? r.json() : []; }),
+                fetch('/city-subscribers/mine', { credentials: 'same-origin' })
+                    .then(function (r) { return r.ok ? r.json() : []; })
+            ]).then(function (results) {
+                var pointSubs = results[0] || [];
+                var citySubs = results[1] || [];
+                pointSubs.forEach(addPointAlertArea);
+                citySubs.forEach(addCityAlertArea);
+                if (showMyAlertAreas && (pointSubs.length || citySubs.length)) {
+                    map.addLayer(myAlertAreas);
+                }
+            }).catch(function () {
+                // Non-fatal -- the rest of the map still works without it.
+            });
+        }
+
+        loadMyAlertAreas();
+
+        var alertAreasToggle = document.getElementById('show-my-alert-areas');
+        if (alertAreasToggle) {
+            alertAreasToggle.addEventListener('change', function (event) {
+                showMyAlertAreas = event.target.checked;
+                if (showMyAlertAreas) {
+                    map.addLayer(myAlertAreas);
+                } else {
+                    map.removeLayer(myAlertAreas);
+                }
+            });
+        }
 
         // Clicking empty map (not a marker -- those are handled above)
         // shows the clicked point's lat/lon and the same notify-here form.
@@ -440,12 +849,16 @@
                 .setContent(
                     '<div class="point-popup">' +
                     '<strong>' + latlng.lat.toFixed(5) + ', ' + latlng.lng.toFixed(5) + '</strong>' +
+                    '<p class="point-popup-nearest-town">Looking up the nearest town…</p>' +
                     notifyFormHtml() +
                     '</div>'
                 )
                 .openOn(map);
 
-            wireNotifyForm(popup.getElement(), latlng);
+            var townLookup = fetchNearestTown(latlng);
+            var popupElement = popup.getElement();
+            showNearestTown(popupElement, townLookup);
+            wireNotifyForm(popupElement, latlng, townLookup);
         }
 
         map.on('click', function (e) {
@@ -678,9 +1091,21 @@
         <input type="checkbox" id="show-all-readings">
         Show all readings (including low confidence)
     </label>
+    {% if current_user %}
+    <label for="show-my-alert-areas">
+        <input type="checkbox" id="show-my-alert-areas" checked>
+        Show my alert areas
+    </label>
+    {% endif %}
     <button type="button" id="history-button">Show history here</button>
 </div>
-<div id="myMap" style="width: 100%; height: 500px"></div>
+<div id="map-container">
+    <div id="myMap" style="width: 100%; height: 500px"></div>
+    <div id="map-loading-overlay">
+        <span class="map-spinner" aria-hidden="true"></span>
+        Loading fire detections…
+    </div>
+</div>
 {% endblock %}
 
 {% block map_styles %}
