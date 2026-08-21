@@ -6,10 +6,7 @@ services:
   # docker-compose.yaml outright. web/scheduler/notifier are deployed as
   # their own Aiven services and just need these env vars pointed at
   # wherever Aiven places these containers.
-  postgres:
-    # PostGIS on top of the same postgres:16 base -- the area-history query
-    # (src/db/postgres.py's get_history_in_area) needs ST_DWithin over a
-    # geography column, which plain postgres doesn't have.
+  pg:
     image: postgis/postgis:16-3.4
     restart: unless-stopped
     environment:
